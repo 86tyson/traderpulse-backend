@@ -1,0 +1,32 @@
+node_modules/
+
+# Secrets — every form. Allow only .env.example back through.
+.env
+.env.*
+!.env.example
+
+# Local runtime data: SQLite DB, cached candles, forward-validation state,
+# trade reports. Never push to GitHub — this is per-machine state.
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# Logs + macOS junk + Jest coverage.
+*.log
+.DS_Store
+coverage/
+
+# Editor scratch
+.vscode/
+.idea/
+
+# Build artifacts (Railway compiles on deploy; never commit local copies)
+dist/
+build/
+
+# Backtest reports — derivative artifacts (~300 CSVs/JSONs from strategy R&D).
+# Regenerate by running scripts/runBacktest.ts. Bloats the repo otherwise.
+reports/

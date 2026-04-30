@@ -1,0 +1,39 @@
+# Files that should NOT be uploaded to Railway during deploy. This is
+# enforced separately from .gitignore — useful for things that we DO want
+# in git history but don't need on the production server.
+
+# Tests run only locally / in CI, never on the deployed server.
+tests/
+**/*.test.js
+**/*.test.ts
+coverage/
+
+# Strategy R&D scripts. Some are .ts files that would require `tsx` at
+# build time; we don't need them on the production server.
+scripts/
+*.ts
+
+# Backtest reports — already gitignored, but defence in depth.
+reports/
+
+# Documentation — useful in the repo, not needed by the runtime.
+*.md
+!README.md
+
+# IDE / OS junk
+.DS_Store
+.vscode/
+.idea/
+
+# Local runtime data — Railway will use a mounted volume at /app/data.
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Secrets — should already be impossible to leak via .gitignore, but
+# repeating here so a stray local .env can never hitchhike onto a deploy.
+.env
+.env.*
+!.env.example

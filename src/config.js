@@ -1,0 +1,183 @@
+'use strict';
+
+require('dotenv').config();
+
+function bool(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value).trim().toLowerCase() === 'true';
+}
+
+function num(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Expected numeric env var, got: ${value}`);
+  }
+  return n;
+}
+
+function list(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const config = {
+  port: num(process.env.PORT, 3001),
+  nodeEnv: process.env.NODE_ENV || 'development',
+  logLevel: process.env.LOG_LEVEL || 'info',
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  backendApiKey: process.env.BACKEND_API_KEY || '',
+
+  botEnabled: bool(process.env.BOT_ENABLED, false),
+  paperMode: bool(process.env.PAPER_MODE, true),
+  requireApproval: bool(process.env.REQUIRE_APPROVAL, true),
+
+  maxTradeUsd: num(process.env.MAX_TRADE_USD, 25),
+  maxDailyLossUsd: num(process.env.MAX_DAILY_LOSS_USD, 50),
+  allowedSymbols: list(process.env.ALLOWED_SYMBOLS, ['BTC-USD', 'ETH-USD']),
+  minConfidence: num(process.env.MIN_CONFIDENCE, 0.5),
+
+  robinhoodApiKey: process.env.ROBINHOOD_API_KEY || '',
+  robinhoodPrivateKey: process.env.ROBINHOOD_PRIVATE_KEY || '',
+
+  // ----- Phase 3: micro live testing -----
+  // The HARD kill switch. Until this is `true`, no live order can ever be
+  // placed by the backend, regardless of any other flag. Checked twice — once
+  // in the live-risk pipeline, once again inside the Robinhood client itself.
+  liveTradingEnabled: bool(process.env.LIVE_TRADING_ENABLED, false),
+
+  // Independent flag for AUTOMATED order placement (no human-in-the-loop).
+  // Default: FALSE. When false, all live orders require manual approval via
+  // POST /live/approve. When true, a future bot-loop is permitted to call
+  // /live/approve without an interactive confirmation. There is currently NO
+  // bot execution loop in this codebase — this flag is wired through config /
+  // status / UI only. Boot will refuse if `AUTO_TRADING_ENABLED=true` while
+  // `LIVE_TRADING_ENABLED=false` (auto trading without the kill switch on
+  // would be incoherent).
+  autoTradingEnabled: bool(process.env.AUTO_TRADING_ENABLED, false),
+
+  // Per-order cap on live USD notional. Defaults to $10. Hard-enforced —
+  // orders above this are rejected with AMOUNT_OUT_OF_RANGE before they
+  // reach the Robinhood API.
+  liveMaxOrderUsd: num(process.env.LIVE_MAX_ORDER_USD, 10),
+
+  // Daily realized-loss cap for LIVE trades only (does not include paper).
+  // Once today's live realized losses meet or exceed this, no new live
+  // orders are accepted until tomorrow.
+  liveDailyLossCapUsd: num(process.env.LIVE_DAILY_LOSS_CAP_USD, 10),
+
+  // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
+  // `allowedSymbols` (which governs paper) — live trading is intentionally
+  // narrower than paper trading during Phase 3.
+  liveAllowedSymbols: list(process.env.LIVE_ALLOWED_SYMBOLS, ['ETH-USD']),
+
+  dataDir: process.env.DATA_DIR || './data',
+};
+
+function validateOrExit() {
+  const errors = [];
+
+  if (!config.backendApiKey || config.backendApiKey.length < 16) {
+    errors.push(
+      'BACKEND_API_KEY is required and must be at least 16 characters. ' +
+        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+    );
+  }
+
+  if (config.botEnabled && !config.paperMode) {
+    if (!config.robinhoodApiKey || !config.robinhoodPrivateKey) {
+      errors.push(
+        'PAPER_MODE=false requires ROBINHOOD_API_KEY and ROBINHOOD_PRIVATE_KEY to be set. ' +
+          'Refusing to start in live mode without credentials.',
+      );
+    }
+  }
+
+  if (config.maxTradeUsd <= 0) {
+    errors.push('MAX_TRADE_USD must be a positive number.');
+  }
+
+  if (config.maxDailyLossUsd <= 0) {
+    errors.push('MAX_DAILY_LOSS_USD must be a positive number.');
+  }
+
+  if (config.allowedSymbols.length === 0) {
+    errors.push('ALLOWED_SYMBOLS must contain at least one symbol.');
+  }
+
+  // ----- Phase 3 boot guards -----
+  // If live trading is enabled, refuse to start without valid Robinhood
+  // credentials AND a sane risk envelope. The kill switch must be intentional.
+  if (config.liveTradingEnabled) {
+    if (!config.robinhoodApiKey || !config.robinhoodPrivateKey) {
+      errors.push(
+        'LIVE_TRADING_ENABLED=true requires both ROBINHOOD_API_KEY and ' +
+          'ROBINHOOD_PRIVATE_KEY to be set. Refusing to start.',
+      );
+    }
+    if (!Number.isFinite(config.liveMaxOrderUsd) || config.liveMaxOrderUsd <= 0) {
+      errors.push('LIVE_MAX_ORDER_USD must be a positive number.');
+    }
+    if (config.liveMaxOrderUsd > 25) {
+      errors.push(
+        `LIVE_MAX_ORDER_USD (${config.liveMaxOrderUsd}) is above the Phase-3 ceiling of $25. ` +
+          'Refusing to start — manual code change required to raise this.',
+      );
+    }
+    if (
+      !Number.isFinite(config.liveDailyLossCapUsd) ||
+      config.liveDailyLossCapUsd <= 0
+    ) {
+      errors.push('LIVE_DAILY_LOSS_CAP_USD must be a positive number.');
+    }
+    if (config.liveAllowedSymbols.length === 0) {
+      errors.push('LIVE_ALLOWED_SYMBOLS must contain at least one symbol.');
+    }
+    // Phase 3 explicitly: ETH only.
+    const nonEth = config.liveAllowedSymbols.filter((s) => s !== 'ETH-USD');
+    if (nonEth.length > 0) {
+      errors.push(
+        `LIVE_ALLOWED_SYMBOLS contains non-ETH entries (${nonEth.join(', ')}). ` +
+          'Phase 3 is ETH-only. Refusing to start.',
+      );
+    }
+    // Manual approval is non-negotiable for live.
+    if (!config.requireApproval) {
+      errors.push(
+        'LIVE_TRADING_ENABLED=true requires REQUIRE_APPROVAL=true. ' +
+          'No auto-execution path is permitted in Phase 3.',
+      );
+    }
+  }
+
+  // ----- Auto-trading boot guard -----
+  // AUTO_TRADING_ENABLED has no meaning unless LIVE_TRADING_ENABLED is also
+  // on. Refusing to boot in this state forces operators to flip them in the
+  // correct order (kill switch first, then auto-trading), and prevents a
+  // confusing "auto on but no live possible" state.
+  if (config.autoTradingEnabled && !config.liveTradingEnabled) {
+    errors.push(
+      'AUTO_TRADING_ENABLED=true requires LIVE_TRADING_ENABLED=true. ' +
+        'Auto trading without the kill switch on is incoherent. Refusing to start.',
+    );
+  }
+  // Auto trading also needs BOT_ENABLED=true for any future loop to act.
+  if (config.autoTradingEnabled && !config.botEnabled) {
+    errors.push(
+      'AUTO_TRADING_ENABLED=true requires BOT_ENABLED=true. ' +
+        'Refusing to start.',
+    );
+  }
+
+  if (errors.length > 0) {
+    for (const e of errors) {
+      console.error(`[config] ${e}`);
+    }
+    process.exit(1);
+  }
+}
+
+module.exports = { config, validateOrExit };
