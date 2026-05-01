@@ -8,9 +8,10 @@ const rateLimit = require('express-rate-limit');
 const { config, validateOrExit } = require('./config');
 const logger = require('./services/logger');
 const { bearerAuth } = require('./middleware/auth');
-const { notFound, errorHandler } = require('./middleware/errorHandler');
+const { errorHandler } = require('./middleware/errorHandler');
 
 const healthRoutes = require('./routes/health');
+const publicRoutes = require('./routes/public');
 const accountRoutes = require('./routes/account');
 const tradeRoutes = require('./routes/trade');
 const tradesRoutes = require('./routes/trades');
@@ -35,8 +36,9 @@ function buildApp() {
   );
   app.use(express.json({ limit: '10kb' }));
 
-  // Public health check (no auth) so uptime monitors can hit it.
+  // Public routes (no auth required) — MUST be before bearerAuth
   app.use('/health', healthRoutes);
+  app.use('/api/public', publicRoutes);
 
   // Everything below requires the shared bearer token.
   app.use(bearerAuth);
@@ -69,7 +71,11 @@ function buildApp() {
   app.use('/live', liveRoutes);
   app.use('/ai', aiRoutes);
 
-  app.use(notFound);
+  // 404 handler (at the very end)
+  app.use((req, res) => {
+    res.status(404).json({ ok: false, error: 'Not found' });
+  });
+
   app.use(errorHandler);
 
   return app;
