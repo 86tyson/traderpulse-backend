@@ -11,6 +11,7 @@ const { bearerAuth } = require('./middleware/auth');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const healthRoutes = require('./routes/health');
+const publicRoutes = require('./routes/public');
 const accountRoutes = require('./routes/account');
 const tradeRoutes = require('./routes/trade');
 const tradesRoutes = require('./routes/trades');
@@ -37,6 +38,10 @@ function buildApp() {
 
   // Public health check (no auth) so uptime monitors can hit it.
   app.use('/health', healthRoutes);
+
+  // Public read-only dashboard endpoints — no auth required.
+  // Mounted BEFORE bearerAuth so the frontend can fetch them without a token.
+  app.use('/api/public', publicRoutes);
 
   // Everything below requires the shared bearer token.
   app.use(bearerAuth);
