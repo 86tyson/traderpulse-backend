@@ -9,6 +9,11 @@ const router = express.Router();
 
 // GET /api/public/status
 router.get('/status', (_req, res) => {
+  // Check if Robinhood credentials are present
+  const robinhoodApiKeyPresent = !!(config.robinhoodApiKey && config.robinhoodApiKey.trim());
+  const robinhoodPrivateKeyPresent = !!(config.robinhoodPrivateKey && config.robinhoodPrivateKey.trim());
+  const robinhoodConnected = robinhoodApiKeyPresent && robinhoodPrivateKeyPresent && config.liveTradingEnabled;
+
   res.json({
     ok: true,
     paperMode: config.paperMode,
@@ -18,6 +23,10 @@ router.get('/status', (_req, res) => {
     manualApprovalRequired: isManualApprovalRequired(config),
     allowedSymbols: config.allowedSymbols,
     liveAllowedSymbols: config.liveAllowedSymbols,
+    // Robinhood connection status
+    robinhoodApiKeyPresent,
+    robinhoodPrivateKeyPresent,
+    robinhoodConnected,
     timestamp: new Date().toISOString(),
   });
 });
