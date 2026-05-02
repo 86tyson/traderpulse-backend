@@ -3,6 +3,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 
 const { config, validateOrExit } = require('./config');
@@ -12,6 +13,7 @@ const { errorHandler } = require('./middleware/errorHandler');
 
 const healthRoutes = require('./routes/health');
 const publicRoutes = require('./routes/public');
+const adminRoutes = require('./routes/admin');
 const accountRoutes = require('./routes/account');
 const tradeRoutes = require('./routes/trade');
 const tradesRoutes = require('./routes/trades');
@@ -51,11 +53,20 @@ function buildApp() {
         if (previewRegex && previewRegex.test(origin)) return cb(null, true);
         return cb(new Error(`CORS: origin not allowed: ${origin}`));
       },
+      // credentials: true is required so the browser will send the
+      // tpai_admin session cookie cross-site (admin.traderpulseai.com →
+      // web-production-27b6e.up.railway.app). Frontend must use
+      // `credentials: 'include'` on its fetch calls for this to take effect.
+      credentials: true,
       methods: ['GET', 'POST'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     }),
   );
   app.use(express.json({ limit: '10kb' }));
+  // cookie-parser must be mounted before any route or middleware that
+  // reads req.cookies — including the bearerAuth middleware (which now
+  // accepts session cookies as an alternative to bearer tokens).
+  app.use(cookieParser());
 
   // Public routes (no auth required) — MUST be before bearerAuth
   app.use('/health', healthRoutes);
@@ -65,7 +76,14 @@ function buildApp() {
   // so the frontend can hit identical paths against either backend.
   app.use('/api/public', publicApiRoutes);
 
-  // Everything below requires the shared bearer token.
+  // Admin auth routes — login/logout/me are intentionally NOT behind
+  // bearerAuth (login obviously can't require auth, and /me reports auth
+  // state for both authed and unauthed callers). Mount BEFORE bearerAuth.
+  app.use('/admin', adminRoutes);
+
+  // Everything below requires either:
+  //   - a valid `Authorization: Bearer <BACKEND_API_KEY>` header, OR
+  //   - a valid `tpai_admin` session cookie issued by /admin/login.
   app.use(bearerAuth);
 
   const tradeLimiter = rateLimit({

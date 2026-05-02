@@ -43,6 +43,16 @@ const config = {
   frontendUrl: list(process.env.FRONTEND_URL, ['http://localhost:5173'])[0],
   backendApiKey: process.env.BACKEND_API_KEY || '',
 
+  // ----- Admin dashboard session auth -----
+  // ADMIN_DASHBOARD_PASSWORD: the password an operator types into the
+  // admin dashboard login form. Server-side only; NEVER exposed to the
+  // frontend in any form. Compared in constant time at /admin/login.
+  // SESSION_SECRET: the HMAC key that signs admin session cookies. A long
+  // random hex string. Rotating it invalidates every issued admin session
+  // immediately.
+  adminDashboardPassword: process.env.ADMIN_DASHBOARD_PASSWORD || '',
+  sessionSecret: process.env.SESSION_SECRET || '',
+
   botEnabled: bool(process.env.BOT_ENABLED, false),
   paperMode: bool(process.env.PAPER_MODE, true),
   requireApproval: bool(process.env.REQUIRE_APPROVAL, true),
@@ -96,6 +106,24 @@ function validateOrExit() {
     errors.push(
       'BACKEND_API_KEY is required and must be at least 16 characters. ' +
         'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+    );
+  }
+
+  // Admin session auth — both must be set together. We do not allow an
+  // unconfigured ADMIN_DASHBOARD_PASSWORD to silently disable login (the
+  // route would 401 every attempt, which is fine, but it usually indicates
+  // a misconfigured deploy).
+  if (!config.sessionSecret || config.sessionSecret.length < 32) {
+    errors.push(
+      'SESSION_SECRET is required and must be at least 32 characters. ' +
+        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+    );
+  }
+  if (!config.adminDashboardPassword || config.adminDashboardPassword.length < 12) {
+    errors.push(
+      'ADMIN_DASHBOARD_PASSWORD is required and must be at least 12 characters. ' +
+        'This is the password the admin dashboard login form accepts. ' +
+        'Pick something high-entropy; it gates live trading.',
     );
   }
 
