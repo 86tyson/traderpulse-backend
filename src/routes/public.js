@@ -9,6 +9,16 @@ const router = express.Router();
 
 // GET /api/public/status
 router.get('/status', (_req, res) => {
+  // robinhoodConnected reflects whether the credentials are CONFIGURED on
+  // this backend — NOT whether a Robinhood API call has succeeded. The
+  // client is lazy (signs per request) so there is no persistent connection
+  // to check. This is the same boolean the frontend's "ROBINHOOD: CONNECTED"
+  // pill reads. If both env vars are non-empty strings the boot guard in
+  // config.validateOrExit has already accepted them as well-formed.
+  const robinhoodConnected = !!(
+    config.robinhoodApiKey && config.robinhoodPrivateKey
+  );
+
   res.json({
     ok: true,
     paperMode: config.paperMode,
@@ -16,6 +26,7 @@ router.get('/status', (_req, res) => {
     liveTradingEnabled: config.liveTradingEnabled,
     autoTradingEnabled: config.autoTradingEnabled,
     manualApprovalRequired: isManualApprovalRequired(config),
+    robinhoodConnected,
     allowedSymbols: config.allowedSymbols,
     liveAllowedSymbols: config.liveAllowedSymbols,
     timestamp: new Date().toISOString(),

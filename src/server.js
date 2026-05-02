@@ -109,6 +109,24 @@ function buildApp() {
 if (require.main === module) {
   validateOrExit();
   const app = buildApp();
+  // ----- Robinhood credential diagnostic (non-secret) -----
+  // Logs ONLY presence/absence + format hint. Never the actual values.
+  // pino's redaction config in services/logger.js also blocks them as a
+  // second line of defence in case anything tries to log them by mistake.
+  const rhKey = String(config.robinhoodApiKey || '');
+  const rhPriv = String(config.robinhoodPrivateKey || '').trim();
+  const robinhoodCredsPresent = !!(rhKey && rhPriv);
+  const robinhoodPrivateKeyFormat = !rhPriv
+    ? 'missing'
+    : rhPriv.startsWith('-----BEGIN')
+    ? 'pem'
+    : 'base64-or-other';
+  // Lengths are useful for diagnosing truncated env vars (e.g. a multi-line
+  // PEM that got chopped to one line in a deploy UI). Length alone is not
+  // sufficient to recover or guess the secret.
+  const robinhoodApiKeyLen = rhKey.length;
+  const robinhoodPrivateKeyLen = rhPriv.length;
+
   app.listen(config.port, () => {
     logger.info(
       {
@@ -124,6 +142,10 @@ if (require.main === module) {
         allowedSymbols: config.allowedSymbols,
         allowedOrigins: config.allowedOrigins,
         vercelPreviewRegex: config.vercelPreviewRegex || null,
+        robinhoodCredsPresent,
+        robinhoodPrivateKeyFormat,
+        robinhoodApiKeyLen,
+        robinhoodPrivateKeyLen,
       },
       `crypto-trading-backend listening on :${config.port}`,
     );
