@@ -21,15 +21,36 @@ const scanRoutes = require('./routes/scan');
 const forwardRoutes = require('./routes/forward');
 const liveRoutes = require('./routes/live');
 const aiRoutes = require('./routes/ai');
+const publicApiRoutes = require('./routes/publicApi');
 
 function buildApp() {
   const app = express();
 
   app.disable('x-powered-by');
   app.use(helmet());
+  // CORS: allow any origin in config.allowedOrigins (comma-separated
+  // FRONTEND_URL env), plus any origin matching VERCEL_PREVIEW_REGEX if set.
+  // Same-origin / curl / server-to-server requests have no Origin header
+  // and are allowed through (CORS only matters for browser cross-origin).
+  let previewRegex = null;
+  if (config.vercelPreviewRegex) {
+    try {
+      previewRegex = new RegExp(config.vercelPreviewRegex);
+    } catch (e) {
+      logger.warn(
+        { err: e.message, pattern: config.vercelPreviewRegex },
+        'Invalid VERCEL_PREVIEW_REGEX; preview origins will be rejected.',
+      );
+    }
+  }
   app.use(
     cors({
-      origin: config.frontendUrl,
+      origin(origin, cb) {
+        if (!origin) return cb(null, true);
+        if (config.allowedOrigins.includes(origin)) return cb(null, true);
+        if (previewRegex && previewRegex.test(origin)) return cb(null, true);
+        return cb(new Error(`CORS: origin not allowed: ${origin}`));
+      },
       methods: ['GET', 'POST'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     }),
@@ -39,6 +60,10 @@ function buildApp() {
   // Public routes (no auth required) — MUST be before bearerAuth
   app.use('/health', healthRoutes);
   app.use('/api/public', publicRoutes);
+
+  // Public read-only API (no auth). Mirrors the Railway public deployment
+  // so the frontend can hit identical paths against either backend.
+  app.use('/api/public', publicApiRoutes);
 
   // Everything below requires the shared bearer token.
   app.use(bearerAuth);
@@ -97,7 +122,8 @@ if (require.main === module) {
         liveMaxOrderUsd: config.liveMaxOrderUsd,
         liveDailyLossCapUsd: config.liveDailyLossCapUsd,
         allowedSymbols: config.allowedSymbols,
-        frontendUrl: config.frontendUrl,
+        allowedOrigins: config.allowedOrigins,
+        vercelPreviewRegex: config.vercelPreviewRegex || null,
       },
       `crypto-trading-backend listening on :${config.port}`,
     );

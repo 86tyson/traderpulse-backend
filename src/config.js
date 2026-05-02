@@ -28,7 +28,19 @@ const config = {
   port: num(process.env.PORT, 3001),
   nodeEnv: process.env.NODE_ENV || 'development',
   logLevel: process.env.LOG_LEVEL || 'info',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  // CORS allow-list. Comma-separated origins in FRONTEND_URL.
+  // Examples:
+  //   FRONTEND_URL=http://localhost:8080
+  //   FRONTEND_URL=https://www.traderpulseai.com,https://traderpulseai.com
+  // Vercel preview origins can be matched via VERCEL_PREVIEW_REGEX
+  // (e.g. ^https:\/\/fehrertrader-[a-z0-9-]+\.vercel\.app$). Leave unset
+  // to disable preview matching.
+  allowedOrigins: list(process.env.FRONTEND_URL, ['http://localhost:5173']),
+  vercelPreviewRegex: process.env.VERCEL_PREVIEW_REGEX || '',
+  // Kept for backwards-compat with anything that still reads `frontendUrl`
+  // (startup logs, etc.). It's the first allowed origin; if you have a
+  // single origin this is identical to FRONTEND_URL.
+  frontendUrl: list(process.env.FRONTEND_URL, ['http://localhost:5173'])[0],
   backendApiKey: process.env.BACKEND_API_KEY || '',
 
   botEnabled: bool(process.env.BOT_ENABLED, false),
