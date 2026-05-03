@@ -107,6 +107,25 @@ const config = {
   // the loop entirely; manual /scan triggers always work regardless.
   botLoopIntervalMin: num(process.env.BOT_LOOP_INTERVAL_MIN, 60),
 
+  // ----- Twilio SMS alerts (optional) -----
+  // When SMS_ALERTS_ENABLED=true AND all four Twilio fields are present, the
+  // backend sends a one-way SMS to ADMIN_ALERT_PHONE every time a NEW
+  // pending-approval row is queued (manual scan or bot loop). Existing
+  // recommendations don't re-trigger — duplicate idempotency is gated at
+  // the queue layer. SMS NEVER approves trades; the dashboard is still the
+  // only approval surface. If any field is missing or SMS_ALERTS_ENABLED
+  // is false, alerts are skipped silently (logged as sms.alert.skipped) —
+  // never fatal to the scan or bot loop.
+  smsAlertsEnabled: bool(process.env.SMS_ALERTS_ENABLED, false),
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || '',
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || '',
+  twilioFromNumber: process.env.TWILIO_FROM_NUMBER || '',
+  adminAlertPhone: process.env.ADMIN_ALERT_PHONE || '',
+  // Optional second recipient. If present, the same SMS is sent to both
+  // numbers in parallel; one number erroring does not block the other.
+  // Leave blank to send to ADMIN_ALERT_PHONE only.
+  adminAlertPhone2: process.env.ADMIN_ALERT_PHONE_2 || '',
+
   // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
   // `allowedSymbols` (which governs paper) — live trading is intentionally
   // narrower than paper trading during Phase 3.
