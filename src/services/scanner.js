@@ -23,6 +23,7 @@ const { buildSnapshot } = require('./snapshotBuilder');
 const { evaluateMarket } = require('./strategy');
 const tradingMode = require('./tradingMode');
 const recommendationQueue = require('./recommendationQueue');
+const smsAlerts = require('./smsAlerts');
 const { config } = require('../config');
 const logger = require('./logger');
 
@@ -82,6 +83,13 @@ async function runScan(opts = {}) {
   // Only enqueue recommendations whose mapped live symbol is in the
   // LIVE_ALLOWED_SYMBOLS list (currently ETH-USD only) AND tradingMode is
   // 'assisted'. enqueueRecommendation is idempotent on recommendation_id.
+  //
+  // SMS ALERT: when (and only when) enqueueRecommendation returns a
+  // non-null id (i.e. a NEW row was actually inserted, not a duplicate
+  // hit on the UNIQUE constraint), fire one notification SMS via
+  // smsAlerts. The send is non-blocking — we don't await — so a Twilio
+  // outage cannot delay scan responses or pause the bot loop. smsAlerts
+  // never throws and never approves a trade; it's purely a notification.
   let queuedCount = 0;
   const { mode: currentMode } = tradingMode.getMode();
   if (currentMode === 'assisted' && config.liveTradingEnabled) {
@@ -90,11 +98,32 @@ async function runScan(opts = {}) {
       if (!rec) continue;
       const liveSymbol = `${rec.symbol}-USD`;
       if (!config.liveAllowedSymbols.includes(liveSymbol)) continue;
-      const enqueued = recommendationQueue.enqueueRecommendation({
-        ...rec,
-        symbol: liveSymbol,
-      });
-      if (enqueued) queuedCount += 1;
+      const normalized = { ...rec, symbol: liveSymbol };
+      const enqueued = recommendationQueue.enqueueRecommendation(normalized);
+      if (enqueued) {
+        queuedCount += 1;
+        // Fire-and-forget. Errors handled inside smsAlerts; never block.
+        // If SMS_ALERTS_ENABLED=false or Twilio config missing, this is a
+        // cheap no-op that just logs sms.alert.skipped.
+        const recForSms = {
+          recommendationId: rec.id,
+          symbol: liveSymbol,
+          side: rec.side,
+          suggestedAmountUsd: rec.amountUsd ?? rec.suggestedAmountUsd,
+          confidenceScore: rec.confidenceScore,
+          entryReason: rec.entryReason,
+          entryPrice: rec.entryPrice,
+        };
+        smsAlerts.sendPendingApprovalAlert(recForSms).catch((err) => {
+          // Defensive: smsAlerts already swallows errors internally,
+          // but in case future changes throw, never let it bubble out
+          // of scan/loop.
+          logger.error(
+            { event: 'sms.alert.failed', kind: 'unhandled', msg: err && err.message },
+            'sms alert promise rejected unexpectedly',
+          );
+        });
+      }
     }
   }
 
