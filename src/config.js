@@ -91,6 +91,14 @@ const config = {
   // orders are accepted until tomorrow.
   liveDailyLossCapUsd: num(process.env.LIVE_DAILY_LOSS_CAP_USD, 10),
 
+  // Hard cap on the number of LIVE buy orders accepted per UTC calendar
+  // day. Counted from the `trades` table where mode='live' and status in
+  // ('executed', 'pending_approval'). Defaults to 5. Phase 3 / Assisted
+  // mode uses this as a guardrail against runaway scanning behavior — even
+  // if the scanner keeps proposing trades, no more than this many per day
+  // can reach Robinhood.
+  liveDailyTradeCountCap: num(process.env.LIVE_DAILY_TRADE_COUNT_CAP, 5),
+
   // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
   // `allowedSymbols` (which governs paper) — live trading is intentionally
   // narrower than paper trading during Phase 3.

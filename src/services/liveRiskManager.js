@@ -126,7 +126,33 @@ function evaluateLive(req, ctx) {
     );
   }
 
-  // ─── 9. ONE OPEN LIVE POSITION MAX ──────────────────────────────────
+  // ─── 9. DAILY LIVE TRADE COUNT CAP ──────────────────────────────────
+  // Hard cap on the number of live BUY orders that can hit Robinhood in a
+  // single UTC calendar day. Counted across executed and pending_approval
+  // rows so a flood of bot proposals can't sneak past by sitting in the
+  // queue and then being approved en masse.
+  if (req.side === 'buy') {
+    const countRow = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM trades
+          WHERE mode = 'live'
+            AND side = 'buy'
+            AND status IN ('executed', 'pending_approval')
+            AND date(created_at) = date('now')`,
+      )
+      .get();
+    const todayCount = countRow.n || 0;
+    if (todayCount >= config.liveDailyTradeCountCap) {
+      return fail(
+        'DAILY_TRADE_COUNT_CAP_HIT',
+        `Today's live BUY count (${todayCount}) >= LIVE_DAILY_TRADE_COUNT_CAP ` +
+          `(${config.liveDailyTradeCountCap}). No more live orders today. ` +
+          'This cap counts both executed and pending_approval rows.',
+      );
+    }
+  }
+
+  // ─── 10. ONE OPEN LIVE POSITION MAX ─────────────────────────────────
   // Only BUY rows count as open positions. SELL rows are exits — a pending
   // or partial sell has its own outcome bookkeeping and must not be confused
   // with the position state.

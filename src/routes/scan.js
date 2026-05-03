@@ -15,6 +15,9 @@ const express = require('express');
 const { fetchCoinbaseCandles, MarketDataError } = require('../services/marketDataClient');
 const { buildSnapshot } = require('../services/snapshotBuilder');
 const { evaluateMarket } = require('../services/strategy');
+const tradingMode = require('../services/tradingMode');
+const recommendationQueue = require('../services/recommendationQueue');
+const { config } = require('../config');
 const logger = require('../services/logger');
 
 const router = express.Router();
@@ -56,12 +59,40 @@ router.get('/', async (req, res, next) => {
       });
     }
 
+    // ----- Assisted mode: persist recommendations to the approval queue. -----
+    // We only enqueue recommendations whose symbol is in the LIVE allow-list
+    // (currently ETH-USD only) AND when tradingMode is 'assisted'. Paused
+    // mode produces scan results for display but does NOT queue anything.
+    // The enqueue function is idempotent on recommendation_id, so a second
+    // /scan call with the same cached recommendation is a no-op.
+    let queuedCount = 0;
+    const { mode: currentMode } = tradingMode.getMode();
+    if (currentMode === 'assisted' && config.liveTradingEnabled) {
+      for (const r of results) {
+        const rec = r.recommendation;
+        if (!rec) continue;
+        // Recommendation symbols come from the strategy as 'BTC' / 'ETH'.
+        // Live allow-list uses 'BTC-USD' / 'ETH-USD'. Map before checking.
+        const liveSymbol = `${rec.symbol}-USD`;
+        if (!config.liveAllowedSymbols.includes(liveSymbol)) continue;
+        // Normalize the recommendation shape for the queue: it expects the
+        // backend symbol (e.g. ETH-USD) and a `side`.
+        const enqueued = recommendationQueue.enqueueRecommendation({
+          ...rec,
+          symbol: liveSymbol,
+        });
+        if (enqueued) queuedCount += 1;
+      }
+    }
+
     const payload = {
       ok: true,
       timeframe,
       generatedAt: new Date().toISOString(),
       results,
       cached: false,
+      tradingMode: currentMode,
+      queued: queuedCount,
     };
     cache = { ts: Date.now(), payload };
 
@@ -72,6 +103,8 @@ router.get('/', async (req, res, next) => {
         symbols: SYMBOLS.map((s) => s.backend),
         recommendations: results.filter((r) => r.recommendation).length,
         skipped: results.filter((r) => !r.recommendation).length,
+        tradingMode: currentMode,
+        queued: queuedCount,
       },
       'scan completed',
     );

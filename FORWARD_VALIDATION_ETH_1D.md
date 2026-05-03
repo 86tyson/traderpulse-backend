@@ -13,8 +13,8 @@
 | Cost (round-trip) | 30 bps |
 | Notional per trade | $25 |
 | Forward validation start | 2026-04-30 |
-| Last evaluated candle | 2026-04-29 |
-| Forward bars elapsed | 0 |
+| Last evaluated candle | 2026-05-03 |
+| Forward bars elapsed | 4 |
 
 ## Tracked metrics (forward-only — bars on/after lock-in)
 
@@ -40,7 +40,7 @@ Backtest baseline: 16 rolling 2-yr windows over 2016–2026, ETH 1d, 30 bps cost
 | Avg expectancy / trade | +$0.521 | — | Insufficient data (need ≥10 closed) |
 | Median expectancy / window | +$0.600 | (single window) | n/a until ≥1 yr forward |
 | Win rate | ~42–58% per backtest window | — | Insufficient sample |
-| Trade frequency | ~1 trade / 30–80 days (9–22 / 2 yr window) | 0 closed in 0 forward day(s) | Too early to compare |
+| Trade frequency | ~1 trade / 30–80 days (9–22 / 2 yr window) | 0 closed in 4 forward day(s) | Too early to compare |
 | Worst-window expectancy | −$0.925 (W4 2017–19 bear) | — | track for sign-flip vs. regime |
 
 **Promotion gates not yet cleared (from prior pre-registration):** ≥80 closed trades on a single tape and BTC cross-symbol confirmation. Forward validation is independent of those gates — it tests whether the *backtested* edge holds out-of-sample.
@@ -55,7 +55,12 @@ _No open position._
 
 ## Daily decision log (most recent 30 days)
 
-_No bars evaluated yet — forward validation start is in the future. The first row will appear after the lock-in date's daily candle closes._
+| Date | Close | Classification | Signal | Entry | Stop | Open? | Unrealized | Realized |
+|---|---|---|---|---|---|---|---|---|
+| 2026-04-30 | $2256.80 | no-signal |  |  |  |  |  |  |
+| 2026-05-01 | $2295.54 | no-signal |  |  |  |  |  |  |
+| 2026-05-02 | $2316.89 | no-signal |  |  |  |  |  |  |
+| 2026-05-03 | $2313.30 | no-signal |  |  |  |  |  |  |
 
 Full daily log: [`data/forward-validation-eth-1d-log.csv`](data/forward-validation-eth-1d-log.csv).
 
@@ -67,4 +72,4 @@ Full daily log: [`data/forward-validation-eth-1d-log.csv`](data/forward-validati
 - All P/L is paper-only. Cost = 30 bps round-trip, notional = $25 per trade, fixed.
 - Re-running the script on the same candle data produces identical output (deterministic).
 
-_Last updated: 2026-04-29T18:26:59.529Z_
+_Last updated: 2026-05-03T00:20:51.776Z_

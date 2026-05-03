@@ -54,10 +54,32 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Generic key/value store for runtime settings the admin dashboard mutates.
+  -- Currently used for tradingMode (paused/assisted/auto). Add new keys as
+  -- new admin-controlled flags appear; never store secrets here (this DB is
+  -- not encrypted at rest beyond Railway volume protections).
+  CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Append-only audit log of trading-mode changes. Every successful POST
+  -- /admin/mode writes one row here. Never updated, never deleted.
+  CREATE TABLE IF NOT EXISTS mode_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_mode TEXT,
+    to_mode TEXT NOT NULL,
+    actor TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
   CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
   CREATE INDEX IF NOT EXISTS idx_trades_outcome ON trades(outcome);
   CREATE INDEX IF NOT EXISTS idx_decisions_created_at ON decisions(created_at);
+  CREATE INDEX IF NOT EXISTS idx_mode_change_log_created_at ON mode_change_log(created_at);
 `);
 
 // Idempotent migration for existing DBs that pre-date the close-event fields.
@@ -77,5 +99,11 @@ ensureColumn('trades', 'outcome', 'TEXT');
 ensureColumn('trades', 'entry_price', 'REAL');
 ensureColumn('trades', 'filled_quantity', 'REAL');
 ensureColumn('trades', 'fill_timestamp', 'TEXT');
+
+// Assisted-trading queue: when a scan generates a recommendation while
+// tradingMode='assisted', a row is inserted with status='pending_approval'
+// and proposed_at=now(). Admin clicks Approve → existing /live/approve
+// flow runs and the row's status flips to 'executed'. Decline → 'rejected'.
+ensureColumn('trades', 'proposed_at', 'TEXT');
 
 module.exports = db;
