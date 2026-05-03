@@ -38,6 +38,7 @@ const recommendationQueue = require('../services/recommendationQueue');
 const liveRiskManager = require('../services/liveRiskManager');
 const robinhood = require('../services/robinhoodClient');
 const tradeLogger = require('../services/tradeLogger');
+const botLoop = require('../services/botLoop');
 const { config } = require('../config');
 const logger = require('../services/logger');
 
@@ -176,6 +177,17 @@ router.post('/mode', requireAdminSession, (req, res) => {
 router.get('/mode/log', requireAdminSession, (req, res) => {
   const limit = Number(req.query.limit) || 20;
   return res.json({ ok: true, changes: tradingMode.recentChanges(limit) });
+});
+
+// GET /admin/bot-loop — runtime status of the scheduled scan-and-queue loop.
+// Read-only; loop is started by server.js at boot and configured purely via
+// env (BOT_LOOP_INTERVAL_MIN, BOT_ENABLED, LIVE_TRADING_ENABLED) plus the
+// runtime tradingMode. There is intentionally NO POST endpoint to start /
+// stop the loop from the UI — that would let a compromised admin session
+// turn the bot on; env-only ensures the loop's existence is a deploy
+// decision, not a session-level decision.
+router.get('/bot-loop', requireAdminSession, (_req, res) => {
+  return res.json({ ok: true, ...botLoop.getStatus() });
 });
 
 // ----- Pending recommendation queue -----

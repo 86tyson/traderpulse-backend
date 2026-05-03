@@ -126,6 +126,9 @@ function buildApp() {
 
 if (require.main === module) {
   validateOrExit();
+  // Lazy-require so tests using buildApp() via supertest never auto-start
+  // the bot loop. Only the production process path reaches this require.
+  const botLoop = require('./services/botLoop');
   const app = buildApp();
   // ----- Robinhood credential diagnostic (non-secret) -----
   // Logs ONLY presence/absence + format hint. Never the actual values.
@@ -167,6 +170,11 @@ if (require.main === module) {
       },
       `crypto-trading-backend listening on :${config.port}`,
     );
+    // Start the bot loop AFTER listen() so the boot log appears first and
+    // the first tick (which fires immediately via setImmediate) doesn't
+    // race the rest of startup. start() itself is a no-op when
+    // BOT_LOOP_INTERVAL_MIN is 0 or unset.
+    botLoop.start();
   });
 }
 

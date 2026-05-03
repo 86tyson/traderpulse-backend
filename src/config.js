@@ -99,6 +99,14 @@ const config = {
   // can reach Robinhood.
   liveDailyTradeCountCap: num(process.env.LIVE_DAILY_TRADE_COUNT_CAP, 5),
 
+  // Bot loop scan interval in MINUTES. The loop only runs when ALL of:
+  //   BOT_ENABLED=true, LIVE_TRADING_ENABLED=true, tradingMode='assisted'.
+  // Lower bound: 5 minutes (faster ticks would hammer the upstream
+  // market-data API and burn rate limits). Default: 60 minutes — matches
+  // the strategy's 1H candle granularity. Set to 0 (or unset) to disable
+  // the loop entirely; manual /scan triggers always work regardless.
+  botLoopIntervalMin: num(process.env.BOT_LOOP_INTERVAL_MIN, 60),
+
   // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
   // `allowedSymbols` (which governs paper) — live trading is intentionally
   // narrower than paper trading during Phase 3.
@@ -217,6 +225,20 @@ function validateOrExit() {
     errors.push(
       'AUTO_TRADING_ENABLED=true requires BOT_ENABLED=true. ' +
         'Refusing to start.',
+    );
+  }
+
+  // Bot loop interval: 0 disables the loop entirely (and is a valid
+  // configuration). Anything explicitly set in (0, 5) is too aggressive
+  // for the upstream market-data API and is rejected at boot.
+  if (
+    Number.isFinite(config.botLoopIntervalMin) &&
+    config.botLoopIntervalMin > 0 &&
+    config.botLoopIntervalMin < 5
+  ) {
+    errors.push(
+      `BOT_LOOP_INTERVAL_MIN (${config.botLoopIntervalMin}) is below the ` +
+        'minimum of 5 minutes. Set it to 0 to disable the loop, or ≥5 to enable.',
     );
   }
 
