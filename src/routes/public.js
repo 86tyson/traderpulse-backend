@@ -29,6 +29,19 @@ router.get('/status', (_req, res) => {
     robinhoodConnected,
     allowedSymbols: config.allowedSymbols,
     liveAllowedSymbols: config.liveAllowedSymbols,
+    // Display-only echo of the env-driven safety caps. These are the
+    // values liveRiskManager.evaluateLive enforces on every order. Exposed
+    // here so the admin UI can show "$10 per-order, $10/day loss cap"
+    // instead of falling back to "$0" when the field is missing.
+    // NOT secrets — cap amounts are intentionally public for trust.
+    // Changing these values has NO effect on actual order gating; that
+    // path reads `config.live*` directly, not this response.
+    caps: {
+      maxOrderUsd: config.liveMaxOrderUsd,
+      dailyLossCapUsd: config.liveDailyLossCapUsd,
+      dailyTradeCountCap: config.liveDailyTradeCountCap,
+      allowedSymbols: config.liveAllowedSymbols,
+    },
     timestamp: new Date().toISOString(),
   });
 });
