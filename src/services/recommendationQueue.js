@@ -48,6 +48,12 @@ const listPendingStmt = db.prepare(`
   LIMIT ?
 `);
 
+const countPendingStmt = db.prepare(`
+  SELECT COUNT(*) AS n
+  FROM trades
+  WHERE status = 'pending_approval'
+`);
+
 const getByIdStmt = db.prepare(`
   SELECT id, recommendation_id, symbol, side, suggested_amount_usd,
          confidence_score, entry_reason, stop_loss, profit_target,
@@ -143,6 +149,12 @@ function listPending(limit = 50) {
   return rows.map(rowToView);
 }
 
+// Cheap COUNT(*) for the STAY-OUT "pending approval already exists" rule.
+// Used by the Soloway evaluator to avoid stacking up un-actioned recs.
+function hasPending() {
+  return (countPendingStmt.get().n || 0) > 0;
+}
+
 function getPendingById(id) {
   const row = getByIdStmt.get(Number(id));
   if (!row) return null;
@@ -194,6 +206,7 @@ function rowToView(row) {
 module.exports = {
   enqueueRecommendation,
   listPending,
+  hasPending,
   getPendingById,
   decline,
   markExecuted,

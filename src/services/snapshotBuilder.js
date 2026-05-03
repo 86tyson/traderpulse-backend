@@ -22,6 +22,13 @@ const VOLATILITY_PERCENTILE_LOOKBACK = 100;
 const VOLATILITY_LOWER_QUANTILE = 0.33;
 const VOLATILITY_UPPER_QUANTILE = 0.67;
 
+// RSI period (Soloway Playbook §06 rank-5, BLK-03, STAY-OUT)
+const RSI_PERIOD = 14;
+// How many bars back to scan for divergence-eligible swing highs.
+// 30 1H bars ≈ 1.25 days — long enough to catch a recent HH/LH pair
+// without picking up old structure that's no longer relevant.
+const DIVERGENCE_LOOKBACK = 30;
+
 const VOLUME_AVG_PERIOD = 20;
 const VOLUME_STRONG_RATIO = 1.5;
 const VOLUME_WEAK_RATIO = 0.7;
@@ -82,6 +89,36 @@ function buildSnapshot(candles, symbol, timeframe) {
     : volatility === 'WEAK' ? 'LOW_VOLATILITY'
     : 'FAVORABLE';
 
+  // ----- ATR series + current value + rolling median (Soloway Playbook) -----
+  // Used by:
+  //   - BLK-02: current ATR vs median (3× = too volatile, 0.25× = dead market)
+  //   - PRE-04: 0.5×ATR confluence proximity
+  //   - STP-01: 0.5×ATR stop buffer
+  //   - STAY-OUT: ATR/price ratio chop check, 2×ATR white-space check
+  // The Soloway spec calls for a 30-day median 1H ATR (≈720 bars). We use
+  // the available window of ATR readings (~100 bars at the current
+  // NUM_BARS=200 fetch). This is a recent-regime proxy; flagged in comments
+  // and Phase B will widen the fetch.
+  const atrSeries = rollingATR(candles, ATR_PERIOD);
+  const atrNow = atrSeries[atrSeries.length - 1];
+  const atrFinite = atrSeries.filter(Number.isFinite);
+  const atrMedian = atrFinite.length > 0 ? median(atrFinite) : NaN;
+
+  // ----- RSI(14) series + current value (Soloway Playbook §06, BLK-03) -----
+  // Wilder's smoothing — the original RSI formulation, matches what most
+  // trading platforms display by default.
+  const rsiSeries = rollingRSI(candles, RSI_PERIOD);
+  const rsiNow = rsiSeries[rsiSeries.length - 1];
+
+  // ----- Recent swing highs paired with their RSI (BLK-03 divergence) -----
+  // Each entry: { idx, price, rsi }. Most recent first. Used to detect
+  // negative divergence (price HH while RSI LH) on the last two swing highs.
+  const recentSwingHighsWithRsi = collectSwingHighs(
+    candles,
+    rsiSeries,
+    DIVERGENCE_LOOKBACK,
+  );
+
   const r = (n) => round(n, symbol === 'BTC' ? 0 : 2);
 
   return {
@@ -97,6 +134,16 @@ function buildSnapshot(candles, symbol, timeframe) {
     volume,
     condition,
     pullbackPct: round(pullbackPct, 2),
+    // Phase-A additions for Soloway evaluator
+    atr: Number.isFinite(atrNow) ? round(atrNow, symbol === 'BTC' ? 2 : 4) : null,
+    atrMedian: Number.isFinite(atrMedian)
+      ? round(atrMedian, symbol === 'BTC' ? 2 : 4)
+      : null,
+    rsi: Number.isFinite(rsiNow) ? round(rsiNow, 2) : null,
+    recentSwingHighsRsi: recentSwingHighsWithRsi.map((s) => ({
+      price: r(s.price),
+      rsi: Number.isFinite(s.rsi) ? round(s.rsi, 2) : null,
+    })),
   };
 }
 
@@ -211,4 +258,85 @@ function round(n, d = 2) {
   return Math.round(n * f) / f;
 }
 
-module.exports = { buildSnapshot, MA_PERIOD };
+// Median of a numeric array. Returns NaN for empty input. O(n log n).
+function median(xs) {
+  if (!xs || xs.length === 0) return NaN;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+// Wilder's RSI(period). Returns an array same length as candles, with NaN
+// for the first `period` bars. After the seed, each new bar uses the
+// recursive smoothing:
+//   avgGain_t = (avgGain_{t-1} * (period - 1) + gain_t) / period
+//   avgLoss_t = (avgLoss_{t-1} * (period - 1) + loss_t) / period
+//   RS = avgGain / avgLoss
+//   RSI = 100 - 100 / (1 + RS)
+// Standard formulation used by virtually all charting platforms.
+function rollingRSI(candles, period) {
+  const n = candles.length;
+  const out = new Array(n).fill(NaN);
+  if (n < period + 1) return out;
+
+  // Initial seed: simple average of the first `period` gains/losses.
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = candles[i].close - candles[i - 1].close;
+    if (change > 0) gainSum += change;
+    else lossSum += -change;
+  }
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+  out[period] = computeRsiFromAvgs(avgGain, avgLoss);
+
+  // Wilder's smoothing for subsequent bars.
+  for (let i = period + 1; i < n; i++) {
+    const change = candles[i].close - candles[i - 1].close;
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out[i] = computeRsiFromAvgs(avgGain, avgLoss);
+  }
+  return out;
+}
+
+function computeRsiFromAvgs(avgGain, avgLoss) {
+  if (avgLoss === 0) {
+    // No down-moves in the window → RSI saturates at 100.
+    return avgGain === 0 ? 50 : 100;
+  }
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+// Collect swing highs (pivot highs) in the last `lookback` bars, paired
+// with their RSI value at the same index. Returns up to MAX_SWINGS entries,
+// most recent first. A "swing high" uses the same SWING_PIVOT_BARS rule
+// as `mostRecentSwingHigh` for consistency.
+function collectSwingHighs(candles, rsiSeries, lookback) {
+  const N = SWING_PIVOT_BARS;
+  const start = Math.max(N, candles.length - lookback);
+  const out = [];
+  const MAX_SWINGS = 5;
+  for (let i = candles.length - 1 - N; i >= start; i--) {
+    const c = candles[i];
+    let isPivot = true;
+    for (let k = 1; k <= N && isPivot; k++) {
+      if (candles[i - k].high >= c.high || candles[i + k].high >= c.high) {
+        isPivot = false;
+      }
+    }
+    if (isPivot) {
+      out.push({ idx: i, price: c.high, rsi: rsiSeries[i] });
+      if (out.length >= MAX_SWINGS) break;
+    }
+  }
+  return out;
+}
+
+module.exports = { buildSnapshot, MA_PERIOD, rollingRSI, median, collectSwingHighs };

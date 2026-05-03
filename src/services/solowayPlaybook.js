@@ -47,6 +47,7 @@
 
 const db = require('../db');
 const tradingMode = require('./tradingMode');
+const recommendationQueue = require('./recommendationQueue');
 const { config } = require('../config');
 const logger = require('./logger');
 
@@ -54,8 +55,30 @@ const MIN_CONFIDENCE = 0.5;
 const MIN_RR = 2.0;
 const PREFERRED_RR = 3.0;
 const MAX_ACCOUNT_RISK_PCT = 0.01; // 1%
-const SUPPORT_PROXIMITY_PCT = 0.015; // within 1.5% of a support factor counts as "near"
+
+// Phase A — Soloway Playbook §03 PRE-04, §08 STP-01, §11 STAY-OUT.
+// The playbook anchors all proximity / buffer math to ATR rather than to
+// a fixed percent of price. ATR adapts to the symbol's current volatility
+// regime; a fixed % does not. These multipliers come straight from the spec.
+const CONFLUENCE_PROXIMITY_ATR_MULT = 0.5; // PRE-04: within 0.5×ATR of a level
+const STOP_BUFFER_ATR_MULT = 0.5; // STP-01: stop sits 0.5×ATR below anchor
+const WHITE_SPACE_ATR_MULT = 2.0; // STAY-OUT: no factors within 2×ATR
+
+// BLK-02 thresholds — current ATR vs rolling median.
+// Spec: 30-day median 1H ATR. We use the available ~200-bar window as a
+// recent-regime proxy; values match the playbook's multipliers.
+const VOL_EXTREME_HIGH_MULT = 3.0;
+const VOL_EXTREME_LOW_MULT = 0.25;
+
+// STAY-OUT thresholds.
+const CHOP_ATR_PRICE_RATIO = 0.004; // 0.4%
+const RSI_OVERBOUGHT_THRESHOLD = 75; // §11
+
+// Pullback minimum — keep modestly below 3% so legitimate small-pullback
+// confluence setups still qualify, while filtering cases where price
+// hasn't pulled in at all.
 const PULLBACK_MIN_PCT = 2.5;
+
 const ROUND_NUMBER_GRANULARITY_USD = { 'ETH-USD': 50, 'BTC-USD': 1000 };
 
 // Pacific-time helpers — uses server local time. Railway is configured
@@ -175,61 +198,122 @@ function runHardBlocks({ symbol, now = new Date() }) {
 }
 
 /**
- * Identify support confluence factors for a given snapshot. Returns the
- * subset of {ma50, swingLow, roundNumber} where price is within
- * SUPPORT_PROXIMITY_PCT of that level. We need at least 2 to call the
- * area "confluence support."
+ * Identify support confluence factors for a given snapshot. PRE-04: a
+ * level is "near" the price if it's within `CONFLUENCE_PROXIMITY_ATR_MULT
+ * × ATR` of price. The playbook's exact form ("within 0.5 × ATR of at
+ * least two independent technical levels").
+ *
+ * Also returns `nearbyFactors` — anything within `WHITE_SPACE_ATR_MULT ×
+ * ATR` of price. Used by the STAY-OUT "white space" check (no levels
+ * mapped within 2×ATR).
  *
  * @param {object} snap  market snapshot from snapshotBuilder
- * @returns {{factors: string[], anchorPrice: number, distancePct: number}}
+ * @returns {{
+ *   factors: string[],          // qualifying levels within 0.5×ATR
+ *   anchorPrice: number,        // highest of the qualifying levels
+ *   lowestSupport: number,      // lowest of the qualifying levels
+ *   nearbyFactors: string[],    // any factor within 2×ATR (broader)
+ * }}
  */
 function findConfluenceFactors(snap) {
   const factors = [];
   const candidates = [];
+  const nearbyFactors = [];
+  const atr = snap.atr || 0;
+  // If we have no ATR yet (warm-up), fall back to a small fixed band so
+  // we don't accidentally call every level "near" or "far". 0.5% of price
+  // is a reasonable proxy until ATR is available.
+  const proximity =
+    atr > 0 ? CONFLUENCE_PROXIMITY_ATR_MULT * atr : snap.price * 0.005;
+  const whiteSpaceBand =
+    atr > 0 ? WHITE_SPACE_ATR_MULT * atr : snap.price * 0.02;
+
+  function checkFactor(name, level) {
+    if (!Number.isFinite(level) || level <= 0 || level > snap.price) return;
+    const dist = snap.price - level;
+    if (dist <= whiteSpaceBand) nearbyFactors.push(name);
+    if (dist <= proximity) {
+      factors.push(name);
+      candidates.push(level);
+    }
+  }
 
   // Factor A: 50-period MA
-  if (snap.ma50 > 0 && snap.ma50 <= snap.price) {
-    const dist = (snap.price - snap.ma50) / snap.price;
-    if (dist <= SUPPORT_PROXIMITY_PCT) {
-      factors.push('ma50');
-      candidates.push(snap.ma50);
-    }
-  }
+  checkFactor('ma50', snap.ma50);
 
   // Factor B: most recent swing low (snapshot's `support` field)
-  if (snap.support > 0 && snap.support <= snap.price) {
-    const dist = (snap.price - snap.support) / snap.price;
-    if (dist <= SUPPORT_PROXIMITY_PCT) {
-      factors.push('swingLow');
-      candidates.push(snap.support);
-    }
-  }
+  checkFactor('swingLow', snap.support);
 
-  // Factor C: nearest round number below price (depends on symbol granularity)
+  // Factor C: nearest round number below price (per-symbol granularity)
   const granularity =
     ROUND_NUMBER_GRANULARITY_USD[`${snap.symbol}-USD`] || 100;
   const roundLevel = Math.floor(snap.price / granularity) * granularity;
-  if (roundLevel > 0 && roundLevel <= snap.price) {
-    const dist = (snap.price - roundLevel) / snap.price;
-    if (dist <= SUPPORT_PROXIMITY_PCT) {
-      factors.push('roundNumber');
-      candidates.push(roundLevel);
-    }
-  }
+  checkFactor('roundNumber', roundLevel);
 
-  // The "anchor" — the highest of the qualifying levels (closest to price).
-  // Stop will sit a small buffer below the LOWEST of these (i.e. behind the
-  // weakest factor).
   if (factors.length === 0) {
-    return { factors: [], anchorPrice: 0, distancePct: 0, lowestSupport: 0 };
+    return {
+      factors: [],
+      anchorPrice: 0,
+      lowestSupport: 0,
+      nearbyFactors,
+    };
   }
-  const anchor = Math.max(...candidates);
-  const lowest = Math.min(...candidates);
   return {
     factors,
-    anchorPrice: anchor,
-    distancePct: (snap.price - anchor) / snap.price,
-    lowestSupport: lowest,
+    anchorPrice: Math.max(...candidates),
+    lowestSupport: Math.min(...candidates),
+    nearbyFactors,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// BLK-03 — RSI negative divergence into resistance (long-only veto)
+//
+// "Price prints a higher high while RSI prints a lower high, AND price is
+//  within 1×ATR of a known resistance level."
+//
+// We get the recent swing-high series with RSI from the snapshot. The
+// last two pivot highs are compared. If price[2] > price[1] but
+// rsi[2] < rsi[1], that's negative divergence. Combined with proximity
+// to resistance, it's the "big-money exits while retail buys" tell.
+// ---------------------------------------------------------------------------
+function hasNegativeDivergenceIntoResistance(snap) {
+  const swings = snap.recentSwingHighsRsi || [];
+  // collectSwingHighs returns most-recent first, so swings[0] is the
+  // newest swing high, swings[1] the one before, etc.
+  if (swings.length < 2) return { divergent: false, reason: null };
+  const newest = swings[0];
+  const previous = swings[1];
+  if (!Number.isFinite(newest.rsi) || !Number.isFinite(previous.rsi)) {
+    return { divergent: false, reason: null };
+  }
+
+  const priceHH = newest.price > previous.price;
+  const rsiLH = newest.rsi < previous.rsi;
+  if (!priceHH || !rsiLH) return { divergent: false, reason: null };
+
+  // Resistance proximity — 1×ATR per the playbook.
+  const atr = snap.atr || 0;
+  if (atr <= 0 || !Number.isFinite(snap.resistance)) {
+    return { divergent: false, reason: null };
+  }
+  const distToResistance = snap.resistance - snap.price;
+  if (distToResistance < 0) {
+    // We're already above the most recent resistance — divergence still
+    // matters but the playbook's specific wording is "within 1×ATR of
+    // resistance," which strictly means above-resistance is a different
+    // case. Be conservative and still treat it as divergence.
+    return { divergent: true, reason: 'price above last resistance with negative divergence' };
+  }
+  const within = distToResistance <= atr;
+  if (!within) return { divergent: false, reason: null };
+
+  return {
+    divergent: true,
+    reason:
+      `price HH (${newest.price} > ${previous.price}) with RSI LH ` +
+      `(${newest.rsi.toFixed(2)} < ${previous.rsi.toFixed(2)}) ` +
+      `within 1×ATR of resistance ($${snap.resistance})`,
   };
 }
 
@@ -285,18 +369,104 @@ function evaluateSoloway(snap, ctx) {
   const now = ctx.now || new Date();
   const skipReasons = [];
 
-  // ─── 1. Pre-trade hard blocks ──────────────────────────────────
+  // Common return helper that always includes the diagnostic fields
+  // required by the spec's logging contract.
+  const ret = (extra) => ({
+    snapshot: snap,
+    recommendation: null,
+    confidence: null,
+    atr: snap.atr,
+    rsi: snap.rsi,
+    confluenceCount: 0,
+    ...extra,
+  });
+
+  // ─── 1. Pre-trade hard blocks (BLK-01, BLK-05, BLK-06 etc.) ────
   const block = runHardBlocks({ symbol: liveSymbol, now });
   if (!block.ok) {
-    return {
-      snapshot: snap,
-      recommendation: null,
-      skipReasons: [`${block.code}: ${block.reason}`],
-      confidence: null,
-    };
+    return ret({ skipReasons: [`${block.code}: ${block.reason}`] });
   }
 
-  // ─── 2. Trend filter ───────────────────────────────────────────
+  // ─── 2. BLK-02 — volatility extreme ────────────────────────────
+  // Current 1H ATR vs rolling median. > 3× = parabolic / flash event,
+  // < 0.25× = dead market. Either way: skip.
+  if (Number.isFinite(snap.atr) && Number.isFinite(snap.atrMedian) && snap.atrMedian > 0) {
+    const ratio = snap.atr / snap.atrMedian;
+    if (ratio > VOL_EXTREME_HIGH_MULT) {
+      return ret({
+        skipReasons: [
+          `VOLATILITY_TOO_HIGH: 1H ATR ${snap.atr} is ${ratio.toFixed(2)}× median ` +
+            `(threshold ${VOL_EXTREME_HIGH_MULT}×) — chart moving too fast for technical levels.`,
+        ],
+      });
+    }
+    if (ratio < VOL_EXTREME_LOW_MULT) {
+      return ret({
+        skipReasons: [
+          `VOLATILITY_TOO_LOW: 1H ATR ${snap.atr} is ${ratio.toFixed(2)}× median ` +
+            `(threshold ${VOL_EXTREME_LOW_MULT}×) — dead market, no movement to capture.`,
+        ],
+      });
+    }
+  }
+
+  // ─── 3. BLK-03 — RSI negative divergence into resistance ────────
+  const div = hasNegativeDivergenceIntoResistance(snap);
+  if (div.divergent) {
+    return ret({
+      skipReasons: [`RSI_NEGATIVE_DIVERGENCE: ${div.reason}`],
+    });
+  }
+
+  // ─── 4. STAY-OUT filters (Section 11 subset) ───────────────────
+  // STAY-OUT D — pending approval already exists. Don't stack up
+  // un-actioned recs. Cheap COUNT(*) on the queue.
+  if (recommendationQueue.hasPending()) {
+    return ret({
+      skipReasons: [
+        'PENDING_APPROVAL_EXISTS: a previous recommendation is still awaiting admin action',
+      ],
+    });
+  }
+
+  // STAY-OUT A — chop. ATR / price < 0.4% means the market is too small
+  // to pay for the round trip (per §11).
+  if (Number.isFinite(snap.atr) && snap.atr > 0 && snap.price > 0) {
+    const ratio = snap.atr / snap.price;
+    if (ratio < CHOP_ATR_PRICE_RATIO) {
+      return ret({
+        skipReasons: [
+          `CHOP_LOW_VOL: ATR/price ratio ${(ratio * 100).toFixed(2)}% ` +
+            `< ${(CHOP_ATR_PRICE_RATIO * 100).toFixed(2)}% — market too tight to trade.`,
+        ],
+      });
+    }
+  }
+
+  // STAY-OUT B — RSI > 75 with no negative divergence. Too late to
+  // enter a long, too early to short. Stand aside.
+  if (Number.isFinite(snap.rsi) && snap.rsi > RSI_OVERBOUGHT_THRESHOLD && !div.divergent) {
+    return ret({
+      skipReasons: [
+        `RSI_OVERBOUGHT_NO_ENTRY: 1H RSI ${snap.rsi} > ${RSI_OVERBOUGHT_THRESHOLD} ` +
+          `with no negative divergence yet — stretched without a top tell.`,
+      ],
+    });
+  }
+
+  // STAY-OUT C — white space. No support factors within 2×ATR. Note
+  // we compute the WHITE_SPACE band in findConfluenceFactors below,
+  // so we run it once and re-use the result.
+  const conf = findConfluenceFactors(snap);
+  if (conf.nearbyFactors.length === 0) {
+    return ret({
+      skipReasons: [
+        'NO_NEARBY_LEVELS: no support factors within 2×ATR — candidate is in white space.',
+      ],
+    });
+  }
+
+  // ─── 5. Trend filter ───────────────────────────────────────────
   if (snap.trend !== 'UPTREND' && snap.trend !== 'SIDEWAYS') {
     skipReasons.push('Trend not readable as uptrend or stable sideways');
   }
@@ -304,41 +474,50 @@ function evaluateSoloway(snap, ctx) {
     skipReasons.push('Price below 50-period MA — not a buyable trend');
   }
 
-  // ─── 3. Pullback filter ────────────────────────────────────────
+  // ─── 6. Pullback filter ────────────────────────────────────────
   if (snap.pullbackPct < PULLBACK_MIN_PCT) {
     skipReasons.push(
       `Pullback only ${snap.pullbackPct.toFixed(2)}% — need ≥ ${PULLBACK_MIN_PCT}%`,
     );
   }
 
-  // ─── 4. Confluence support (need ≥ 2 factors) ──────────────────
-  const conf = findConfluenceFactors(snap);
+  // ─── 7. Confluence support (PRE-04 — ≥2 factors within 0.5×ATR) ─
   if (conf.factors.length < 2) {
     skipReasons.push(
-      `Only ${conf.factors.length} support factor(s) within ${(SUPPORT_PROXIMITY_PCT * 100).toFixed(1)}% — need ≥ 2`,
+      `INSUFFICIENT_CONFLUENCE: only ${conf.factors.length} support factor(s) ` +
+        `within 0.5×ATR — need ≥ 2 (Soloway PRE-04).`,
     );
   }
 
-  // If any of the above failed, short-circuit BEFORE computing R:R.
   if (skipReasons.length > 0) {
-    return { snapshot: snap, recommendation: null, skipReasons, confidence: null };
+    return ret({ skipReasons, confluenceCount: conf.factors.length });
   }
 
-  // ─── 5. Stop, target, R:R ──────────────────────────────────────
-  // Stop sits just below the lowest qualifying support factor.
-  const stopBufferUsd = Math.max(snap.price * 0.003, 0.5); // 0.3% or $0.50, whichever bigger
-  const stopLoss = Math.max(0, conf.lowestSupport - stopBufferUsd);
+  // ─── 8. Stop (STP-01 ATR-anchored), target, R:R ────────────────
+  // Stop = lowest qualifying support − 0.5×ATR (§08 STP-01).
+  // BLK-04 (no clean invalidation) is enforced here: if ATR isn't
+  // available or the resulting stop is ≥ entry, refuse — "if you can't
+  // define your stop, you can't define your risk."
+  if (!Number.isFinite(snap.atr) || snap.atr <= 0) {
+    return ret({
+      skipReasons: ['MISSING_ATR: cannot compute ATR-anchored stop (warm-up).'],
+      confluenceCount: conf.factors.length,
+    });
+  }
+  const stopBufferUsd = STOP_BUFFER_ATR_MULT * snap.atr;
+  const stopLoss = conf.lowestSupport - stopBufferUsd;
+  if (stopLoss <= 0 || stopLoss >= snap.price) {
+    return ret({
+      skipReasons: [
+        `MISSING_STOP: ATR-anchored stop ($${stopLoss.toFixed(2)}) is not ` +
+          `strictly below entry ($${snap.price}). Cannot define risk (Soloway BLK-04).`,
+      ],
+      confluenceCount: conf.factors.length,
+    });
+  }
   const riskUsd = snap.price - stopLoss;
-  if (riskUsd <= 0) {
-    return {
-      snapshot: snap,
-      recommendation: null,
-      skipReasons: ['MISSING_STOP: cannot compute a sane stop level below price'],
-      confidence: null,
-    };
-  }
 
-  // Target = entry + (MIN_RR × risk). Prefer 3:1 if resistance allows.
+  // Target — prefer 3:1 if resistance allows, else 2:1, else reject.
   const distToResistance = snap.resistance - snap.price;
   const targetMin = snap.price + MIN_RR * riskUsd;
   const targetPreferred = snap.price + PREFERRED_RR * riskUsd;
@@ -351,51 +530,42 @@ function evaluateSoloway(snap, ctx) {
     profitTarget = targetMin;
     achievedRR = MIN_RR;
   } else {
-    return {
-      snapshot: snap,
-      recommendation: null,
+    return ret({
       skipReasons: [
-        `Insufficient room to resistance for ${MIN_RR}:1 R:R ` +
-          `(have $${distToResistance.toFixed(2)}, need $${(MIN_RR * riskUsd).toFixed(2)})`,
+        `INSUFFICIENT_RR: room to resistance ($${distToResistance.toFixed(2)}) ` +
+          `< ${MIN_RR}× risk ($${(MIN_RR * riskUsd).toFixed(2)}). Soloway PRE-05.`,
       ],
-      confidence: null,
-    };
+      confluenceCount: conf.factors.length,
+    });
   }
 
-  // ─── 6. Confidence score ───────────────────────────────────────
+  // ─── 9. Confidence score ───────────────────────────────────────
   const confidence = scoreSetup({
     snap,
     factorCount: conf.factors.length,
     rr: achievedRR,
   });
   if (confidence < MIN_CONFIDENCE) {
-    return {
-      snapshot: snap,
-      recommendation: null,
+    return ret({
       skipReasons: [
-        `Confidence ${confidence.toFixed(2)} < minimum ${MIN_CONFIDENCE}`,
+        `LOW_CONFIDENCE: score ${confidence.toFixed(2)} < minimum ${MIN_CONFIDENCE}`,
       ],
       confidence,
-    };
+      confluenceCount: conf.factors.length,
+    });
   }
 
-  // ─── 7. Build the recommendation ───────────────────────────────
-  // Suggested USD: Soloway calls for max 1% account risk per trade. We
-  // cannot read live account equity from this synchronous code path
-  // safely, so we use config.liveMaxOrderUsd as the upper bound (which
-  // the user has set conservatively at $10). The 1% rule is enforced in
-  // spirit here and re-checked at approval time by liveRiskManager.
+  // ─── 10. Build the recommendation ──────────────────────────────
+  // Suggested USD respects config.liveMaxOrderUsd. Real 1% account-equity
+  // sizing is Phase D — the per-order cap stands as the operative ceiling.
   const suggestedAmountUsd = Math.min(config.liveMaxOrderUsd, 10);
 
-  // recommendation_id must be unique. Fold in symbol + ISO bar ts so the
-  // SAME setup repeating across cached scans dedupes correctly via the
-  // queue's UNIQUE constraint.
   const isoMinute = new Date().toISOString().slice(0, 16);
   const recId = `soloway-${liveSymbol}-${isoMinute}`;
 
   const recommendation = {
     id: recId,
-    symbol: snap.symbol, // 'BTC' or 'ETH' — scanner.js will map to live symbol
+    symbol: snap.symbol,
     side: 'buy',
     amountUsd: suggestedAmountUsd,
     suggestedAmountUsd,
@@ -403,11 +573,12 @@ function evaluateSoloway(snap, ctx) {
     entryReason:
       `Soloway Playbook: pullback to confluence support ` +
       `(${conf.factors.join(' + ')}). Entry $${snap.price}, ` +
-      `stop $${stopLoss.toFixed(2)} (-${riskUsd.toFixed(2)}), ` +
-      `target $${profitTarget.toFixed(2)} (${achievedRR.toFixed(1)}:1 R:R).`,
+      `stop $${stopLoss.toFixed(2)} (-$${riskUsd.toFixed(2)}, 0.5×ATR=${(STOP_BUFFER_ATR_MULT * snap.atr).toFixed(2)}), ` +
+      `target $${profitTarget.toFixed(2)} (${achievedRR.toFixed(1)}:1 R:R). ` +
+      `RSI ${snap.rsi != null ? snap.rsi.toFixed(1) : 'n/a'}, ATR $${snap.atr.toFixed(2)}.`,
     stopLoss,
     profitTarget,
-    invalidationLevel: stopLoss, // the Soloway invalidation = the stop
+    invalidationLevel: stopLoss,
     riskReward: achievedRR,
     entryPrice: snap.price,
     setup: 'pullback_to_confluence_support',
@@ -419,6 +590,9 @@ function evaluateSoloway(snap, ctx) {
     recommendation,
     skipReasons: [],
     confidence,
+    atr: snap.atr,
+    rsi: snap.rsi,
+    confluenceCount: conf.factors.length,
     setup: 'pullback_to_confluence_support',
   };
 }
@@ -429,10 +603,17 @@ module.exports = {
   isWeekendBlock,
   findConfluenceFactors,
   scoreSetup,
+  hasNegativeDivergenceIntoResistance,
   // Constants exposed for testing / introspection
   MIN_CONFIDENCE,
   MIN_RR,
   PREFERRED_RR,
   PULLBACK_MIN_PCT,
-  SUPPORT_PROXIMITY_PCT,
+  CONFLUENCE_PROXIMITY_ATR_MULT,
+  STOP_BUFFER_ATR_MULT,
+  WHITE_SPACE_ATR_MULT,
+  VOL_EXTREME_HIGH_MULT,
+  VOL_EXTREME_LOW_MULT,
+  CHOP_ATR_PRICE_RATIO,
+  RSI_OVERBOUGHT_THRESHOLD,
 };

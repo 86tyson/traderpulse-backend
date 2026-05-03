@@ -34,7 +34,15 @@ const SYMBOLS = [
   { backend: 'ETH-USD', lovable: 'ETH' },
 ];
 const DEFAULT_TIMEFRAME = '1h';
-const NUM_BARS = 100;
+// 200 1H bars ≈ 8 days. Enough buffer for:
+//   - 50-period MA (needs 50)
+//   - ATR(14) series + a meaningful rolling median (Soloway BLK-02)
+//   - RSI(14) series + recent swing-high history (Soloway BLK-03 divergence)
+//   - Pullback / swing detection
+// The Soloway spec calls for a 30-day median 1H ATR (~720 bars). This is
+// a recent-regime proxy; flagged in solowayPlaybook.js. Phase B will widen
+// the upstream fetch with pagination.
+const NUM_BARS = 200;
 const CACHE_TTL_MS = 60_000;
 
 let cache = { ts: 0, payload: null };
@@ -98,10 +106,13 @@ async function runScan(opts = {}) {
       // Soloway extras (undefined for default strategy)
       setup: evalResult.setup || null,
       confidence: evalResult.confidence ?? null,
+      atr: evalResult.atr ?? null,
+      rsi: evalResult.rsi ?? null,
+      confluenceCount: evalResult.confluenceCount ?? null,
     });
 
-    // Per-symbol structured log so the operator can see what passed/failed
-    // each tick without grepping the whole pipeline.
+    // Per-symbol structured log per the spec's logging contract:
+    //   { strategy, symbol, passed, confidence, skipReasons, atr, rsi, confluenceCount }
     logger.info(
       {
         event: 'scan.symbol.evaluated',
@@ -110,6 +121,9 @@ async function runScan(opts = {}) {
         passed: !!evalResult.recommendation,
         confidence: evalResult.confidence ?? null,
         skipReasons: evalResult.skipReasons || null,
+        atr: evalResult.atr ?? null,
+        rsi: evalResult.rsi ?? null,
+        confluenceCount: evalResult.confluenceCount ?? null,
       },
       `scan ${s.backend} under ${strategy}: ${
         evalResult.recommendation ? 'PASS' : 'WAIT'
