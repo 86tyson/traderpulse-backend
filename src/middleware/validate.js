@@ -19,7 +19,12 @@ const tradeApproveSchema = z
     // separate object (liveApproveSchema) which DOES NOT include this field
     // — any `riskMode` sent to /live/approve is rejected as INVALID_BODY
     // at the validation layer. See `services/riskModeAdjuster.js`.
-    riskMode: z.enum(['conservative', 'standard', 'aggressive']).optional(),
+    // 'soloway_playbook' is accepted by the validator but treated as
+    // 'standard' by riskModeAdjuster — Soloway is a SCANNER strategy, not
+    // a per-trade sizing preference. The /trade/approve flow doesn't use
+    // it. Listed here so the frontend can send it without 400-ing during
+    // the transition while we collapse the two concepts in the UI.
+    riskMode: z.enum(['conservative', 'standard', 'aggressive', 'soloway_playbook']).optional(),
   })
   .strict();
 

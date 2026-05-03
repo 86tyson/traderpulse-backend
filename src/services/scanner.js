@@ -21,7 +21,9 @@ const {
 } = require('./marketDataClient');
 const { buildSnapshot } = require('./snapshotBuilder');
 const { evaluateMarket } = require('./strategy');
+const { evaluateSoloway } = require('./solowayPlaybook');
 const tradingMode = require('./tradingMode');
+const strategyMode = require('./strategyMode');
 const recommendationQueue = require('./recommendationQueue');
 const smsAlerts = require('./smsAlerts');
 const { config } = require('../config');
@@ -66,17 +68,53 @@ async function runScan(opts = {}) {
     return { ...cache.payload, cached: true };
   }
 
+  // Read the admin-controlled strategy mode at the start of the scan.
+  // Mode can be 'default' (existing 1H pullback evaluator) or
+  // 'soloway_playbook' (confluence-support pullback with hard blocks).
+  // Both produce recommendations only; neither places orders.
+  const { mode: strategy } = strategyMode.getMode();
+
   const results = [];
   for (const s of SYMBOLS) {
     const candles = await fetchCoinbaseCandles(s.backend, timeframe, NUM_BARS);
     const snapshot = buildSnapshot(candles, s.lovable, timeframe);
-    const evalResult = evaluateMarket(snapshot);
+
+    let evalResult;
+    if (strategy === 'soloway_playbook') {
+      // Soloway runs all its own filters. It accepts BTC and ETH for
+      // signal generation, but the `liveAllowedSymbols` filter further
+      // down still gates which signals get queued for live approval
+      // (currently ETH-USD only — BTC-USD signals are watchlist-only).
+      evalResult = evaluateSoloway(snapshot, { liveSymbol: s.backend });
+    } else {
+      evalResult = evaluateMarket(snapshot);
+    }
+
     results.push({
       snapshot: evalResult.snapshot,
       recommendation: evalResult.recommendation,
       skipReasons: evalResult.skipReasons,
       skippedConfidence: evalResult.skippedConfidence,
+      // Soloway extras (undefined for default strategy)
+      setup: evalResult.setup || null,
+      confidence: evalResult.confidence ?? null,
     });
+
+    // Per-symbol structured log so the operator can see what passed/failed
+    // each tick without grepping the whole pipeline.
+    logger.info(
+      {
+        event: 'scan.symbol.evaluated',
+        strategy,
+        symbol: s.backend,
+        passed: !!evalResult.recommendation,
+        confidence: evalResult.confidence ?? null,
+        skipReasons: evalResult.skipReasons || null,
+      },
+      `scan ${s.backend} under ${strategy}: ${
+        evalResult.recommendation ? 'PASS' : 'WAIT'
+      }`,
+    );
   }
 
   // ----- Assisted mode: persist recommendations to the approval queue. -----
@@ -134,6 +172,7 @@ async function runScan(opts = {}) {
     results,
     cached: false,
     tradingMode: currentMode,
+    strategyMode: strategy,
     queued: queuedCount,
   };
   cache = { ts: Date.now(), payload };
@@ -147,6 +186,7 @@ async function runScan(opts = {}) {
       recommendations: results.filter((r) => r.recommendation).length,
       skipped: results.filter((r) => !r.recommendation).length,
       tradingMode: currentMode,
+      strategyMode: strategy,
       queued: queuedCount,
     },
     'scan completed',

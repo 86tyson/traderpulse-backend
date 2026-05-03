@@ -34,6 +34,7 @@ const {
   verifyPassword,
 } = require('../services/adminSession');
 const tradingMode = require('../services/tradingMode');
+const strategyMode = require('../services/strategyMode');
 const recommendationQueue = require('../services/recommendationQueue');
 const liveRiskManager = require('../services/liveRiskManager');
 const robinhood = require('../services/robinhoodClient');
@@ -177,6 +178,36 @@ router.post('/mode', requireAdminSession, (req, res) => {
 router.get('/mode/log', requireAdminSession, (req, res) => {
   const limit = Number(req.query.limit) || 20;
   return res.json({ ok: true, changes: tradingMode.recentChanges(limit) });
+});
+
+// ----- Strategy mode (which strategy the bot loop runs) -----
+// Distinct from `tradingMode` (paused/assisted/auto). Two modes available:
+//   'default'           — locked 1H pullback scanner (existing behavior)
+//   'soloway_playbook'  — confluence-support pullback with stricter rules
+// Both produce recommendations only — no order placement bypass exists.
+// All admin routes here are session-protected.
+
+router.get('/strategy-mode', requireAdminSession, (_req, res) => {
+  return res.json({ ok: true, ...strategyMode.getStatus() });
+});
+
+router.post('/strategy-mode', requireAdminSession, (req, res) => {
+  const { mode, reason } = req.body || {};
+  if (typeof mode !== 'string') {
+    return res.status(400).json({
+      ok: false,
+      code: 'INVALID_BODY',
+      reason: "body must include { mode: 'default' | 'soloway_playbook' }",
+    });
+  }
+  const result = strategyMode.setMode(mode, {
+    actor: `admin-session:${req.adminSession.iat}`,
+    reason: typeof reason === 'string' ? reason.slice(0, 500) : null,
+  });
+  if (!result.ok) {
+    return res.status(400).json(result);
+  }
+  return res.json({ ok: true, ...strategyMode.getStatus(), unchanged: !!result.unchanged });
 });
 
 // GET /admin/bot-loop — runtime status of the scheduled scan-and-queue loop.
