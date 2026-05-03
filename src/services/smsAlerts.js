@@ -59,6 +59,52 @@ function isReady() {
 }
 
 /**
+ * Internal: normalize the configured quiet-hours window. Bad values
+ * (non-integer, out of 0..23 range) silently fall back to the safe
+ * defaults of 8..23 — never crash on a misconfigured env var.
+ */
+function getWindow() {
+  const start = Number.isInteger(config.smsStartHour) &&
+    config.smsStartHour >= 0 && config.smsStartHour <= 23
+    ? config.smsStartHour : 8;
+  const end = Number.isInteger(config.smsEndHour) &&
+    config.smsEndHour >= 0 && config.smsEndHour <= 23
+    ? config.smsEndHour : 23;
+  return { start, end };
+}
+
+/**
+ * Internal: is the supplied hour (0..23) inside the allowed window?
+ * Handles overnight wraparound when start > end (e.g. start=22, end=6
+ * means allowed = {22, 23, 0, 1, 2, 3, 4, 5, 6}).
+ */
+function hourInWindow(hour, start, end) {
+  if (start <= end) return hour >= start && hour <= end;
+  // Wraparound — allowed = {start..23} ∪ {0..end}
+  return hour >= start || hour <= end;
+}
+
+/**
+ * Internal: check whether NOW (server local time) is inside the quiet-
+ * hours allow window. Returns { ok: true } or
+ * { ok: false, reason: 'quiet_hours' }.
+ *
+ * Uses server local time intentionally — Railway's containers run UTC,
+ * so the operator should set start/end relative to that. Documented in
+ * .env.example.
+ */
+function checkWindow(now = new Date()) {
+  const { start, end } = getWindow();
+  const hour = now.getHours();
+  if (hourInWindow(hour, start, end)) return { ok: true };
+  return {
+    ok: false,
+    reason: 'quiet_hours',
+    detail: `current hour ${hour} outside allowed window ${start}..${end}`,
+  };
+}
+
+/**
  * Internal: build the deduped list of recipient phone numbers from
  * config. Always includes ADMIN_ALERT_PHONE; appends ADMIN_ALERT_PHONE_2
  * if non-empty AND distinct. Trimmed; dupes removed (case-insensitive
@@ -232,6 +278,25 @@ async function sendPendingApprovalAlert(rec) {
     return { sent: false, reason: ready.reason, results: [] };
   }
 
+  // Quiet-hours gate. Runs AFTER isReady() so the skip log clearly
+  // distinguishes "config missing" from "outside the time window."
+  // The recommendation row is already in the queue; the operator will
+  // see it on the dashboard at next refresh — only the SMS is silenced.
+  const window = checkWindow();
+  if (!window.ok) {
+    logger.info(
+      {
+        event: 'sms.alert.skipped',
+        reason: window.reason,
+        detail: window.detail,
+        recommendationId: rec?.recommendationId,
+        symbol: rec?.symbol,
+      },
+      `sms alert skipped: ${window.detail}`,
+    );
+    return { sent: false, reason: window.reason, results: [] };
+  }
+
   const recipients = getRecipients();
   if (recipients.length === 0) {
     // Defensive: isReady already requires ADMIN_ALERT_PHONE, so this
@@ -271,6 +336,8 @@ async function sendPendingApprovalAlert(rec) {
  */
 function getStatus() {
   const ready = isReady();
+  const window = getWindow();
+  const inWindowNow = hourInWindow(new Date().getHours(), window.start, window.end);
   return {
     enabled: !!config.smsAlertsEnabled,
     configured: ready.ok,
@@ -278,6 +345,9 @@ function getStatus() {
     fromNumberMasked: maskPhone(config.twilioFromNumber),
     recipientsMasked: getRecipients().map(maskPhone),
     recipientCount: getRecipients().length,
+    smsWindowStart: window.start,
+    smsWindowEnd: window.end,
+    inWindowNow,
   };
 }
 

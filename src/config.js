@@ -16,6 +16,16 @@ function num(value, fallback) {
   return n;
 }
 
+// Lenient int-in-range parser. Used for non-critical env vars where a
+// typo should fall back to the default rather than crash boot. Examples:
+// SMS quiet-hours window (notifications only, not safety-critical).
+function intInRange(value, min, max, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) return fallback;
+  return n;
+}
+
 function list(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
   return String(value)
@@ -125,6 +135,18 @@ const config = {
   // numbers in parallel; one number erroring does not block the other.
   // Leave blank to send to ADMIN_ALERT_PHONE only.
   adminAlertPhone2: process.env.ADMIN_ALERT_PHONE_2 || '',
+
+  // Quiet hours — SMS only sent when SMS_START_HOUR <= currentHour <=
+  // SMS_END_HOUR (inclusive on both ends), in the SERVER's local time.
+  // Defaults to 8–23 (8 AM through 11 PM). Overnight wraparound is
+  // supported: if start > end (e.g. start=22, end=6) the allowed window
+  // wraps midnight. Outside the window, sends are skipped with
+  // sms.alert.skipped reason='quiet_hours' and never reach Twilio.
+  // Uses the LENIENT parser — bad input (typo, out of 0..23) falls back
+  // to the default rather than crashing boot. SMS is notification-only,
+  // not safety-critical; a typo here should not take down trading.
+  smsStartHour: intInRange(process.env.SMS_START_HOUR, 0, 23, 8),
+  smsEndHour: intInRange(process.env.SMS_END_HOUR, 0, 23, 23),
 
   // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
   // `allowedSymbols` (which governs paper) — live trading is intentionally
