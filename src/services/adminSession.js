@@ -103,20 +103,30 @@ function verifySessionToken(token) {
   return payload;
 }
 
-// Cookie attributes appropriate for the runtime.
-//   - production (NODE_ENV=production): SameSite=None + Secure
-//     so that admin.traderpulseai.com (Vercel) can include the cookie on
-//     cross-site requests to web-production-27b6e.up.railway.app.
-//   - other (dev/test): SameSite=Lax + non-secure so localhost:8080 →
-//     localhost:3001 works without HTTPS in dev.
+// Cookie attributes — FORCED to the cross-site config so admin.traderpulseai.com
+// (Vercel) can include the cookie on requests to Railway. Browsers REQUIRE
+// SameSite=None to be paired with Secure=true; if either is missing in a
+// cross-site context, the browser silently drops the Set-Cookie header,
+// the cookie is never stored, and the next /admin/me returns
+// authenticated:false even though /admin/login appeared to succeed.
 //
-// HttpOnly is always on. JS in the bundle never touches the cookie.
+// PREVIOUSLY: these were gated on `config.nodeEnv === 'production'`. That
+// failed on Railway because npm doesn't set NODE_ENV=production for `npm
+// start`, so the cookie was being issued with sameSite='lax' + secure=false
+// and the browser was dropping it cross-site.
+//
+// LOCAL DEV CAVEAT: Secure cookies are refused by browsers over plain
+// http://localhost. To exercise the cookie path locally you need either
+// (a) a local HTTPS proxy (e.g. mkcert + caddy), or (b) skip the cookie
+// path locally and use the bearer-token fallback that bearerAuth already
+// supports for the legacy /trade and /scan callers.
+//
+// HttpOnly is always on. JS in the bundle never touches the cookie value.
 function cookieOptions({ ttlMs = DEFAULT_TTL_MS, clear = false } = {}) {
-  const isProd = config.nodeEnv === 'production';
   const opts = {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? 'none' : 'lax',
+    secure: true,
+    sameSite: 'none',
     path: '/',
   };
   if (clear) {

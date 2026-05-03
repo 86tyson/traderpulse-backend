@@ -28,6 +28,15 @@ const publicApiRoutes = require('./routes/publicApi');
 function buildApp() {
   const app = express();
 
+  // Trust the first hop of forwarding headers (Railway's edge proxy).
+  // Without this, Express sees the inbound request as plain http coming
+  // from the proxy IP, and `req.secure` is false even though the user
+  // requested over https. That makes Secure cookies behave inconsistently
+  // and breaks express-rate-limit's per-IP keying. Setting to 1 trusts
+  // exactly one upstream proxy (Railway), no further. NEVER set to true
+  // in production — that would let any client spoof X-Forwarded-For.
+  app.set('trust proxy', 1);
+
   app.disable('x-powered-by');
   app.use(helmet());
   // CORS: allow any origin in config.allowedOrigins (comma-separated
