@@ -25,6 +25,7 @@ const { evaluateSoloway } = require('./solowayPlaybook');
 const tradingMode = require('./tradingMode');
 const strategyMode = require('./strategyMode');
 const recommendationQueue = require('./recommendationQueue');
+const autoTrader = require('./autoTrader');
 const smsAlerts = require('./smsAlerts');
 const { config } = require('../config');
 const logger = require('./logger');
@@ -131,20 +132,26 @@ async function runScan(opts = {}) {
     );
   }
 
-  // ----- Assisted mode: persist recommendations to the approval queue. -----
+  // ----- Assisted / Auto mode: persist recommendations to the queue. -----
   // Only enqueue recommendations whose mapped live symbol is in the
   // LIVE_ALLOWED_SYMBOLS list (currently ETH-USD only) AND tradingMode is
-  // 'assisted'. enqueueRecommendation is idempotent on recommendation_id.
+  // 'assisted' OR 'auto'. enqueueRecommendation is idempotent on
+  // recommendation_id.
   //
-  // SMS ALERT: when (and only when) enqueueRecommendation returns a
-  // non-null id (i.e. a NEW row was actually inserted, not a duplicate
-  // hit on the UNIQUE constraint), fire one notification SMS via
-  // smsAlerts. The send is non-blocking — we don't await — so a Twilio
-  // outage cannot delay scan responses or pause the bot loop. smsAlerts
-  // never throws and never approves a trade; it's purely a notification.
+  // ASSISTED: SMS the operator. Wait for manual approve click.
+  // AUTO:     SMS the operator (post-execution) AND immediately fire the
+  //           recommendation through autoTrader.executeQueued → liveRiskManager
+  //           → robinhood.placeOrder. All existing caps + gates still run.
+  //
+  // The send/execute is non-blocking — we don't await. Failures inside
+  // autoTrader / smsAlerts never bubble out of the scan.
   let queuedCount = 0;
+  let autoFiredCount = 0;
   const { mode: currentMode } = tradingMode.getMode();
-  if (currentMode === 'assisted' && config.liveTradingEnabled) {
+  const queueEnabled =
+    (currentMode === 'assisted' || currentMode === 'auto') && config.liveTradingEnabled;
+
+  if (queueEnabled) {
     for (const r of results) {
       const rec = r.recommendation;
       if (!rec) continue;
@@ -152,11 +159,28 @@ async function runScan(opts = {}) {
       if (!config.liveAllowedSymbols.includes(liveSymbol)) continue;
       const normalized = { ...rec, symbol: liveSymbol };
       const enqueued = recommendationQueue.enqueueRecommendation(normalized);
-      if (enqueued) {
-        queuedCount += 1;
-        // Fire-and-forget. Errors handled inside smsAlerts; never block.
-        // If SMS_ALERTS_ENABLED=false or Twilio config missing, this is a
-        // cheap no-op that just logs sms.alert.skipped.
+      if (!enqueued) continue;
+      queuedCount += 1;
+
+      if (currentMode === 'auto') {
+        // Auto mode: fire-and-forget execution. SMS will be sent
+        // post-execution from inside autoTrader.executeQueued.
+        autoFiredCount += 1;
+        autoTrader
+          .executeQueued(enqueued)
+          .catch((err) => {
+            logger.error(
+              {
+                event: 'auto.trade.unhandled',
+                queueId: enqueued,
+                recommendationId: rec.id,
+                msg: err && err.message,
+              },
+              'auto-trade promise rejected unexpectedly',
+            );
+          });
+      } else {
+        // Assisted mode: SMS the operator that there's a pending row.
         const recForSms = {
           recommendationId: rec.id,
           symbol: liveSymbol,
@@ -167,9 +191,6 @@ async function runScan(opts = {}) {
           entryPrice: rec.entryPrice,
         };
         smsAlerts.sendPendingApprovalAlert(recForSms).catch((err) => {
-          // Defensive: smsAlerts already swallows errors internally,
-          // but in case future changes throw, never let it bubble out
-          // of scan/loop.
           logger.error(
             { event: 'sms.alert.failed', kind: 'unhandled', msg: err && err.message },
             'sms alert promise rejected unexpectedly',

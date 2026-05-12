@@ -97,11 +97,16 @@ function getModeStatus() {
     lockedModes.assisted =
       'LIVE_TRADING_ENABLED=false on the backend. The kill switch must be on for the assisted queue to do anything useful.';
   }
-  // Auto is always locked in this build, but we surface a different
-  // message depending on whether the env ceiling would allow it.
-  lockedModes.auto = ceilings.autoTradingEnabled
-    ? 'Auto trading is reserved. The execution loop is not implemented yet — Assisted is the highest mode currently available.'
-    : 'Auto trading requires AUTO_TRADING_ENABLED=true on the backend AND a future implementation step. Currently locked.';
+  // Auto trading is selectable when all env ceilings are on.
+  if (!ceilings.liveTradingEnabled || !ceilings.autoTradingEnabled || !ceilings.botEnabled) {
+    const missing = [];
+    if (!ceilings.liveTradingEnabled) missing.push('LIVE_TRADING_ENABLED');
+    if (!ceilings.autoTradingEnabled) missing.push('AUTO_TRADING_ENABLED');
+    if (!ceilings.botEnabled) missing.push('BOT_ENABLED');
+    lockedModes.auto =
+      `Auto trading requires ${missing.join(' + ')}=true on the backend. ` +
+      'Set the env var(s) on Railway and redeploy to unlock.';
+  }
 
   return {
     mode,
@@ -143,19 +148,50 @@ function setMode(newMode, opts = {}) {
     };
   }
 
-  // Auto is reserved — never accept until implemented.
+  // Auto trading — permitted ONLY when all env-ceiling gates are on.
+  // The env vars must be set on Railway (not just the runtime mode), so
+  // turning auto on requires a redeploy/manual ceiling flip in addition
+  // to the UI click. Defense in depth.
   if (newMode === 'auto') {
-    logger.warn(
-      { event: 'admin.mode.change.reject', code: 'NOT_IMPLEMENTED', requested: newMode, actor },
-      'setMode rejected: auto trading not implemented',
-    );
-    return {
-      ok: false,
-      code: 'NOT_IMPLEMENTED',
-      reason:
-        'Auto trading is not implemented in this build. ' +
-        'Use mode=assisted for bot-proposed + manually-approved orders.',
-    };
+    if (!config.liveTradingEnabled) {
+      logger.warn(
+        { event: 'admin.mode.change.reject', code: 'LIVE_TRADING_DISABLED', requested: newMode, actor },
+        'setMode auto rejected: live trading off',
+      );
+      return {
+        ok: false,
+        code: 'LIVE_TRADING_DISABLED',
+        reason:
+          'Cannot enable auto mode while LIVE_TRADING_ENABLED=false on the backend. ' +
+          'Set the env var on Railway and redeploy first.',
+      };
+    }
+    if (!config.autoTradingEnabled) {
+      logger.warn(
+        { event: 'admin.mode.change.reject', code: 'AUTO_TRADING_DISABLED', requested: newMode, actor },
+        'setMode auto rejected: AUTO_TRADING_ENABLED=false at env layer',
+      );
+      return {
+        ok: false,
+        code: 'AUTO_TRADING_DISABLED',
+        reason:
+          'Cannot enable auto mode while AUTO_TRADING_ENABLED=false on the backend. ' +
+          'Set the env var on Railway and redeploy first — auto is gated at the env ceiling.',
+      };
+    }
+    if (!config.botEnabled) {
+      logger.warn(
+        { event: 'admin.mode.change.reject', code: 'BOT_DISABLED', requested: newMode, actor },
+        'setMode auto rejected: BOT_ENABLED=false at env layer',
+      );
+      return {
+        ok: false,
+        code: 'BOT_DISABLED',
+        reason:
+          'Cannot enable auto mode while BOT_ENABLED=false on the backend.',
+      };
+    }
+    // All env gates pass. Allow the runtime flip.
   }
 
   // Env-ceiling enforcement: assisted requires the live kill switch to be on.

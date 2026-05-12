@@ -241,11 +241,18 @@ function validateOrExit() {
           'Phase 3 is ETH-only. Refusing to start.',
       );
     }
-    // Manual approval is non-negotiable for live.
-    if (!config.requireApproval) {
+    // Manual approval is required UNLESS AUTO_TRADING_ENABLED is also true.
+    // Auto-execution is permitted when ALL of the following hold:
+    //   LIVE_TRADING_ENABLED=true (kill switch)
+    //   BOT_ENABLED=true (bot subsystem allowed)
+    //   AUTO_TRADING_ENABLED=true (auto path permitted)
+    //   REQUIRE_APPROVAL=false (admin has explicitly disabled manual gate)
+    // Without AUTO_TRADING_ENABLED, REQUIRE_APPROVAL must remain true so the
+    // dashboard's manual-approve flow is the only path orders can be placed.
+    if (!config.requireApproval && !config.autoTradingEnabled) {
       errors.push(
-        'LIVE_TRADING_ENABLED=true requires REQUIRE_APPROVAL=true. ' +
-          'No auto-execution path is permitted in Phase 3.',
+        'LIVE_TRADING_ENABLED=true with REQUIRE_APPROVAL=false also requires ' +
+          'AUTO_TRADING_ENABLED=true. Otherwise no path can place orders.',
       );
     }
   }
