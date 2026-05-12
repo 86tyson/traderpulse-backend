@@ -139,18 +139,22 @@ async function tick() {
     return;
   }
 
-  // Gate 3: runtime trading mode
+  // Gate 3: runtime trading mode — bot loop runs in BOTH assisted and auto.
+  // In assisted, scanner queues recommendations for manual approval.
+  // In auto, scanner queues AND immediately auto-executes via autoTrader.
+  // In paused (or any other mode), the bot is silent.
   const { mode } = tradingMode.getMode();
-  if (mode !== 'assisted') {
+  const TICK_ELIGIBLE_MODES = ['assisted', 'auto'];
+  if (!TICK_ELIGIBLE_MODES.includes(mode)) {
     lastTick = {
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       status: 'skipped',
-      reason: `tradingMode='${mode}' (need 'assisted')`,
+      reason: `tradingMode='${mode}' (need 'assisted' or 'auto')`,
     };
     logger.info(
       { event: 'bot.loop.skip', reason: `tradingMode='${mode}'` },
-      `botLoop tick skipped: tradingMode is ${mode}, not assisted`,
+      `botLoop tick skipped: tradingMode is ${mode}, not assisted/auto`,
     );
     return;
   }
@@ -227,7 +231,10 @@ function getStatus() {
     botEnabled: !!config.botEnabled,
     liveTradingEnabled: !!config.liveTradingEnabled,
     tradingMode: mode,
-    tradingModeOk: mode === 'assisted',
+    // Loop runs in 'assisted' (proposes → manual approve) OR 'auto'
+    // (proposes → auto-executes via autoTrader). Anything else (paused
+    // or unknown) keeps the loop silent.
+    tradingModeOk: mode === 'assisted' || mode === 'auto',
   };
   const wouldRunIfTicked =
     !!intervalHandle && gates.botEnabled && gates.liveTradingEnabled && gates.tradingModeOk;
