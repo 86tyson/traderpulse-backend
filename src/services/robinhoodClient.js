@@ -106,21 +106,50 @@ function loadPrivateKey() {
     }
   }
 
-  let seed;
+  let decoded;
   try {
-    seed = Buffer.from(raw, 'base64');
+    decoded = Buffer.from(raw, 'base64');
   } catch (err) {
     throw new RobinhoodAuthError(`ROBINHOOD_PRIVATE_KEY is not valid base64: ${err.message}`);
   }
-  if (seed.length !== 32) {
+
+  // Standard PKCS#8 DER prefix for Ed25519 — 16 bytes that precede the
+  // 32-byte raw seed inside a fully-wrapped DER blob.
+  const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+
+  // Three accepted base64 input shapes (tolerance added 2026-05-13 after
+  // a key-rotation incident where the upstream tool produced 48-byte
+  // PKCS#8 DER instead of the 32-byte raw seed our parser previously
+  // required):
+  //   - 32 bytes  → raw Ed25519 seed; we wrap in PKCS#8 ourselves
+  //   - 48 bytes  → full PKCS#8 DER (our wrapper prefix + 32-byte seed);
+  //                 load directly, no re-wrapping
+  //   - 64 bytes  → libsodium "secret key" (seed[32] || public[32]);
+  //                 take the first 32 bytes as the seed
+  // Anything else → rejected with a clear actionable message.
+  let seed;
+  if (decoded.length === 32) {
+    seed = decoded;
+  } else if (
+    decoded.length === 48 &&
+    decoded.subarray(0, PKCS8_ED25519_PREFIX.length).equals(PKCS8_ED25519_PREFIX)
+  ) {
+    try {
+      return crypto.createPrivateKey({ key: decoded, format: 'der', type: 'pkcs8' });
+    } catch (err) {
+      throw new RobinhoodAuthError(`Failed to parse PKCS#8 DER Ed25519 key: ${err.message}`);
+    }
+  } else if (decoded.length === 64) {
+    seed = decoded.subarray(0, 32);
+  } else {
     throw new RobinhoodAuthError(
-      `Decoded ROBINHOOD_PRIVATE_KEY is ${seed.length} bytes; expected 32 (Ed25519 seed).`,
+      `Decoded ROBINHOOD_PRIVATE_KEY is ${decoded.length} bytes; expected ` +
+        `32 (raw Ed25519 seed), 48 (PKCS#8 DER), or 64 (libsodium secret key).`,
     );
   }
+
   // Wrap the 32-byte seed in a minimal PKCS#8 DER envelope so Node will accept it.
-  // Magic prefix is the OID for Ed25519 followed by the 32-byte octet-string header.
-  const pkcs8Prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
-  const der = Buffer.concat([pkcs8Prefix, seed]);
+  const der = Buffer.concat([PKCS8_ED25519_PREFIX, seed]);
   try {
     return crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
   } catch (err) {
