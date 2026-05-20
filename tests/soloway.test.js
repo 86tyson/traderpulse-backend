@@ -227,6 +227,43 @@ describe('PRE-04 — confluence requires ≥ 2 factors', () => {
       r.skipReasons.some((s) => s.startsWith('INSUFFICIENT_CONFLUENCE') || s.startsWith('NO_NEARBY_LEVELS')),
     ).toBe(true);
   });
+
+  test('allows 2-factor confluence when trend and R:R pass', () => {
+    const snap = baseSnapshot({
+      atr: 10,
+      price: 2300,
+      ma50: 2297,
+      support: 2280,
+      pullbackPct: 1.6,
+      volume: 'STRONG',
+    });
+    const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
+    expect(r.recommendation).not.toBeNull();
+    expect(r.confluenceCount).toBe(2);
+    expect(r.recommendation.riskReward).toBeGreaterThanOrEqual(2);
+  });
+
+  test('allows smaller pullbacks down to 1.5%', () => {
+    const snap = baseSnapshot({ pullbackPct: 1.6 });
+    const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
+    expect(r.recommendation).not.toBeNull();
+  });
+
+  test('passes chop threshold when ATR/price is ~0.35%', () => {
+    // Ensure confluence factors are present for this check so the test
+    // isolates the CHOP behavior rather than failing earlier on PRE-04.
+    const snap = baseSnapshot({
+      atr: 8,
+      atrMedian: 8,
+      ma50: 2297,
+      support: 2298,
+      pullbackPct: 1.6,
+      volume: 'STRONG',
+    });
+    const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
+    expect(r.recommendation).not.toBeNull();
+    expect(r.skipReasons.some((s) => s.startsWith('CHOP_LOW_VOL'))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

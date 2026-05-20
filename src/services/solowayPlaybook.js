@@ -71,13 +71,12 @@ const VOL_EXTREME_HIGH_MULT = 3.0;
 const VOL_EXTREME_LOW_MULT = 0.25;
 
 // STAY-OUT thresholds.
-const CHOP_ATR_PRICE_RATIO = 0.004; // 0.4%
+const CHOP_ATR_PRICE_RATIO = 0.0033; // 0.33% — slightly less strict than the original 0.4%
 const RSI_OVERBOUGHT_THRESHOLD = 75; // §11
 
-// Pullback minimum — keep modestly below 3% so legitimate small-pullback
-// confluence setups still qualify, while filtering cases where price
-// hasn't pulled in at all.
-const PULLBACK_MIN_PCT = 2.5;
+// Pullback minimum — loosen from 2.5% to 1.5% so smaller, still valid
+// pullbacks can qualify while preserving the structure bias of the playbook.
+const PULLBACK_MIN_PCT = 1.5;
 
 const ROUND_NUMBER_GRANULARITY_USD = { 'ETH-USD': 50, 'BTC-USD': 1000 };
 
@@ -324,9 +323,11 @@ function hasNegativeDivergenceIntoResistance(snap) {
 function scoreSetup({ snap, factorCount, rr }) {
   let score = 0;
 
-  // Trend (max 0.25)
+  // Trend (max 0.25). Sideways is still lower-quality than an uptrend,
+  // but it is less harshly penalized so valid sideways pullbacks remain
+  // tradeable when the rest of the setup is strong.
   if (snap.trend === 'UPTREND') score += 0.25;
-  else if (snap.trend === 'SIDEWAYS') score += 0.05;
+  else if (snap.trend === 'SIDEWAYS') score += 0.10;
 
   // Confluence factors (max 0.30 — 2 factors = 0.20, 3 factors = 0.30)
   if (factorCount >= 3) score += 0.30;
@@ -482,6 +483,9 @@ function evaluateSoloway(snap, ctx) {
   }
 
   // ─── 7. Confluence support (PRE-04 — ≥2 factors within 0.5×ATR) ─
+  // The playbook's current implementation is happy with 2 confirmations.
+  // When only 2 factors are available, the setup can still qualify if the
+  // trend is tradable and the risk/reward profile passes.
   if (conf.factors.length < 2) {
     skipReasons.push(
       `INSUFFICIENT_CONFLUENCE: only ${conf.factors.length} support factor(s) ` +
