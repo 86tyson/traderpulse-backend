@@ -40,6 +40,7 @@ const liveRiskManager = require('../services/liveRiskManager');
 const robinhood = require('../services/robinhoodClient');
 const tradeLogger = require('../services/tradeLogger');
 const botLoop = require('../services/botLoop');
+const smsAlerts = require('../services/smsAlerts');
 const { config } = require('../config');
 const logger = require('../services/logger');
 
@@ -219,6 +220,48 @@ router.post('/strategy-mode', requireAdminSession, (req, res) => {
 // decision, not a session-level decision.
 router.get('/bot-loop', requireAdminSession, (_req, res) => {
   return res.json({ ok: true, ...botLoop.getStatus() });
+});
+
+// ----- SMS alerts: status + manual test -----
+// GET /admin/sms/status — read-only. Reports whether Twilio creds are set,
+// quiet-hours window, recipient count (masked). No network call.
+router.get('/sms/status', requireAdminSession, (_req, res) => {
+  return res.json({ ok: true, ...smsAlerts.getStatus() });
+});
+
+// POST /admin/sms/test — fire one clearly-marked TEST SMS to verify the
+// Twilio pipeline end-to-end. Uses sendPendingApprovalAlert with a fake
+// recommendation row so the body shape exactly mirrors a real alert.
+// The TEST- recommendation_id is never persisted; this route does NOT
+// write to the queue.
+router.post('/sms/test', requireAdminSession, async (_req, res) => {
+  const fakeRec = {
+    recommendationId: `TEST-${Date.now()}`,
+    symbol: 'ETH-USD',
+    side: 'buy',
+    suggestedAmountUsd: 10,
+    confidenceScore: 0.99,
+    entryReason: 'TEST ALERT — ignore. Manual /admin/sms/test invocation.',
+    entryPrice: 0,
+  };
+  try {
+    const result = await smsAlerts.sendPendingApprovalAlert(fakeRec);
+    logger.info(
+      { event: 'sms.test.invoked', sent: result.sent, reason: result.reason || null },
+      `sms test invoked: sent=${result.sent}`,
+    );
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    // sendPendingApprovalAlert is documented to never throw, but belt-and-
+    // suspenders for future refactors.
+    logger.error(
+      { event: 'sms.test.error', msg: err && err.message },
+      'sms test threw unexpectedly',
+    );
+    return res
+      .status(500)
+      .json({ ok: false, code: 'SMS_TEST_FAILED', reason: err && err.message });
+  }
 });
 
 // ----- Pending recommendation queue -----
