@@ -148,6 +148,32 @@ const config = {
   smsStartHour: intInRange(process.env.SMS_START_HOUR, 0, 23, 8),
   smsEndHour: intInRange(process.env.SMS_END_HOUR, 0, 23, 23),
 
+  // ----- Pushover notifications (preferred channel as of 2026-05) -----
+  // Pushover replaces Twilio SMS as the operator-notification channel. Why:
+  //   - No A2P 10DLC carrier registration required (no carrier in the loop)
+  //   - Avoids entangling personal trading alerts with the Tyson Insulation
+  //     S-Corp identity registered on the legacy Twilio account
+  //   - $5 one-time per platform vs $15+monthly Twilio Campaign cost
+  //   - Delivery is direct via the Pushover app, no carrier-level filtering
+  //
+  // The Twilio fields above are intentionally KEPT (dead config) so the
+  // smsAlerts.js module continues to load without throwing if the legacy
+  // env vars are still present. Nothing imports smsAlerts.js anymore;
+  // notifier.js is the active dispatcher.
+  //
+  // Quiet-hours gating: NONE on the server side — Pushover's mobile app
+  // has its own Quiet Hours setting (Settings → Quiet Hours) that the
+  // operator controls per device. We always submit to Pushover; the app
+  // handles local suppression.
+  pushoverEnabled: bool(process.env.PUSHOVER_ENABLED, false),
+  pushoverAppToken: process.env.PUSHOVER_APP_TOKEN || '',
+  pushoverUserKey: process.env.PUSHOVER_USER_KEY || '',
+  // Optional second recipient (e.g. backup phone). If present, the same
+  // notification is sent to both keys in parallel via separate Pushover
+  // API calls; one failing does not block the other. Leave blank to send
+  // only to PUSHOVER_USER_KEY.
+  pushoverUserKey2: process.env.PUSHOVER_USER_KEY_2 || '',
+
   // Allow-list for LIVE orders. Defaults to ETH-USD only. INDEPENDENT of
   // `allowedSymbols` (which governs paper) — live trading is intentionally
   // narrower than paper trading during Phase 3.

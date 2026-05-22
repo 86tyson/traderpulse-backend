@@ -40,7 +40,7 @@ const liveRiskManager = require('../services/liveRiskManager');
 const robinhood = require('../services/robinhoodClient');
 const tradeLogger = require('../services/tradeLogger');
 const botLoop = require('../services/botLoop');
-const smsAlerts = require('../services/smsAlerts');
+const notifier = require('../services/notifier');
 const { config } = require('../config');
 const logger = require('../services/logger');
 
@@ -222,47 +222,53 @@ router.get('/bot-loop', requireAdminSession, (_req, res) => {
   return res.json({ ok: true, ...botLoop.getStatus() });
 });
 
-// ----- SMS alerts: status + manual test -----
-// GET /admin/sms/status — read-only. Reports whether Twilio creds are set,
-// quiet-hours window, recipient count (masked). No network call.
-router.get('/sms/status', requireAdminSession, (_req, res) => {
-  return res.json({ ok: true, ...smsAlerts.getStatus() });
-});
+// ----- Operator notifications: status + manual test -----
+// As of 2026-05 we route through Pushover instead of Twilio SMS — see
+// src/services/notifier.js. The /sms/* paths are kept as ALIASES for the
+// /notify/* paths so any existing DevTools console snippets or scripts
+// don't 404. Both paths return the same payloads.
 
-// POST /admin/sms/test — fire one clearly-marked TEST SMS to verify the
-// Twilio pipeline end-to-end. Uses sendPendingApprovalAlert with a fake
-// recommendation row so the body shape exactly mirrors a real alert.
-// The TEST- recommendation_id is never persisted; this route does NOT
-// write to the queue.
-router.post('/sms/test', requireAdminSession, async (_req, res) => {
+function notifyStatusHandler(_req, res) {
+  return res.json({ ok: true, ...notifier.getStatus() });
+}
+
+async function notifyTestHandler(_req, res) {
   const fakeRec = {
     recommendationId: `TEST-${Date.now()}`,
     symbol: 'ETH-USD',
     side: 'buy',
     suggestedAmountUsd: 10,
     confidenceScore: 0.99,
-    entryReason: 'TEST ALERT — ignore. Manual /admin/sms/test invocation.',
+    entryReason: 'TEST ALERT — ignore. Manual /admin/notify/test invocation.',
     entryPrice: 0,
   };
   try {
-    const result = await smsAlerts.sendPendingApprovalAlert(fakeRec);
+    const result = await notifier.sendPendingApprovalAlert(fakeRec);
     logger.info(
-      { event: 'sms.test.invoked', sent: result.sent, reason: result.reason || null },
-      `sms test invoked: sent=${result.sent}`,
+      { event: 'notify.test.invoked', sent: result.sent, reason: result.reason || null },
+      `notify test invoked: sent=${result.sent}`,
     );
     return res.json({ ok: true, ...result });
   } catch (err) {
     // sendPendingApprovalAlert is documented to never throw, but belt-and-
     // suspenders for future refactors.
     logger.error(
-      { event: 'sms.test.error', msg: err && err.message },
-      'sms test threw unexpectedly',
+      { event: 'notify.test.error', msg: err && err.message },
+      'notify test threw unexpectedly',
     );
     return res
       .status(500)
-      .json({ ok: false, code: 'SMS_TEST_FAILED', reason: err && err.message });
+      .json({ ok: false, code: 'NOTIFY_TEST_FAILED', reason: err && err.message });
   }
-});
+}
+
+// Canonical paths.
+router.get('/notify/status', requireAdminSession, notifyStatusHandler);
+router.post('/notify/test', requireAdminSession, notifyTestHandler);
+// Legacy aliases — same handlers, kept for any cached frontend / console
+// snippets pointing at /admin/sms/*.
+router.get('/sms/status', requireAdminSession, notifyStatusHandler);
+router.post('/sms/test', requireAdminSession, notifyTestHandler);
 
 // ----- Pending recommendation queue -----
 // Bot-proposed trades waiting for admin approval. Populated by /scan when

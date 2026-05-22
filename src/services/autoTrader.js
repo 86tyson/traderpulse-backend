@@ -36,7 +36,7 @@ const liveRiskManager = require('./liveRiskManager');
 const robinhood = require('./robinhoodClient');
 const recommendationQueue = require('./recommendationQueue');
 const tradeLogger = require('./tradeLogger');
-const smsAlerts = require('./smsAlerts');
+const notifier = require('./notifier');
 const { config } = require('../config');
 const logger = require('./logger');
 
@@ -166,8 +166,8 @@ async function executeQueued(queueId) {
     `AUTO-TRADE FIRED: ${row.symbol} ${row.side} $${row.suggestedAmountUsd} @ $${refPrice}`,
   );
 
-  // ─── SMS post-execution (fire-and-forget) ───
-  smsAlerts
+  // ─── Push notification post-execution (fire-and-forget) ───
+  notifier
     .sendPendingApprovalAlert({
       recommendationId: row.recommendationId,
       symbol: row.symbol,
@@ -179,8 +179,8 @@ async function executeQueued(queueId) {
     })
     .catch((err) => {
       logger.error(
-        { event: 'sms.alert.failed', kind: 'auto_fire_notify', msg: err && err.message },
-        'auto-trade SMS notify failed',
+        { event: 'notify.failed', kind: 'auto_fire_notify', msg: err && err.message },
+        'auto-trade notify failed',
       );
     });
 

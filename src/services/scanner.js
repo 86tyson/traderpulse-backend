@@ -26,7 +26,7 @@ const tradingMode = require('./tradingMode');
 const strategyMode = require('./strategyMode');
 const recommendationQueue = require('./recommendationQueue');
 const autoTrader = require('./autoTrader');
-const smsAlerts = require('./smsAlerts');
+const notifier = require('./notifier');
 const { config } = require('../config');
 const logger = require('./logger');
 
@@ -180,8 +180,8 @@ async function runScan(opts = {}) {
             );
           });
       } else {
-        // Assisted mode: SMS the operator that there's a pending row.
-        const recForSms = {
+        // Assisted mode: push-notify the operator that there's a pending row.
+        const recForNotify = {
           recommendationId: rec.id,
           symbol: liveSymbol,
           side: rec.side,
@@ -190,10 +190,10 @@ async function runScan(opts = {}) {
           entryReason: rec.entryReason,
           entryPrice: rec.entryPrice,
         };
-        smsAlerts.sendPendingApprovalAlert(recForSms).catch((err) => {
+        notifier.sendPendingApprovalAlert(recForNotify).catch((err) => {
           logger.error(
-            { event: 'sms.alert.failed', kind: 'unhandled', msg: err && err.message },
-            'sms alert promise rejected unexpectedly',
+            { event: 'notify.failed', kind: 'unhandled', msg: err && err.message },
+            'notify promise rejected unexpectedly',
           );
         });
       }
