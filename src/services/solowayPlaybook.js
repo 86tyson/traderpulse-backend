@@ -62,7 +62,7 @@ const MAX_ACCOUNT_RISK_PCT = 0.01; // 1%
 // regime; a fixed % does not. These multipliers come straight from the spec.
 const CONFLUENCE_PROXIMITY_ATR_MULT = 0.5; // PRE-04: within 0.5×ATR of a level
 const STOP_BUFFER_ATR_MULT = 0.5; // STP-01: stop sits 0.5×ATR below anchor
-const WHITE_SPACE_ATR_MULT = 2.0; // STAY-OUT: no factors within 2×ATR
+const WHITE_SPACE_ATR_MULT = 3.0; // STAY-OUT: no factors within 3×ATR
 
 // BLK-02 thresholds — current ATR vs rolling median.
 // Spec: 30-day median 1H ATR. We use the available ~200-bar window as a
@@ -71,12 +71,12 @@ const VOL_EXTREME_HIGH_MULT = 3.0;
 const VOL_EXTREME_LOW_MULT = 0.25;
 
 // STAY-OUT thresholds.
-const CHOP_ATR_PRICE_RATIO = 0.0033; // 0.33% — slightly less strict than the original 0.4%
+const CHOP_ATR_PRICE_RATIO = 0.0025; // 0.25% — looser than the previous 0.33%
 const RSI_OVERBOUGHT_THRESHOLD = 75; // §11
 
-// Pullback minimum — loosen from 2.5% to 1.5% so smaller, still valid
-// pullbacks can qualify while preserving the structure bias of the playbook.
-const PULLBACK_MIN_PCT = 1.5;
+// Pullback minimum — loosen from 1.5% to 1.0% to increase valid setups
+// while preserving the pullback-to-support structure of the playbook.
+const PULLBACK_MIN_PCT = 1.0;
 
 const ROUND_NUMBER_GRANULARITY_USD = { 'ETH-USD': 50, 'BTC-USD': 1000 };
 
@@ -349,6 +349,15 @@ function scoreSetup({ snap, factorCount, rr }) {
   return Math.min(1, Math.max(0, score));
 }
 
+function qualifiesAsSingleStrongFactor({ snap, achievedRR, confidence }) {
+  return (
+    snap.trend === 'UPTREND' &&
+    snap.price > snap.ma50 &&
+    achievedRR >= MIN_RR &&
+    confidence >= 0.55
+  );
+}
+
 /**
  * Evaluate a single market snapshot under the Soloway Playbook rules.
  * Returns either:
@@ -455,14 +464,14 @@ function evaluateSoloway(snap, ctx) {
     });
   }
 
-  // STAY-OUT C — white space. No support factors within 2×ATR. Note
+  // STAY-OUT C — white space. No support factors within 3×ATR. Note
   // we compute the WHITE_SPACE band in findConfluenceFactors below,
   // so we run it once and re-use the result.
   const conf = findConfluenceFactors(snap);
   if (conf.nearbyFactors.length === 0) {
     return ret({
       skipReasons: [
-        'NO_NEARBY_LEVELS: no support factors within 2×ATR — candidate is in white space.',
+        'NO_NEARBY_LEVELS: no support factors within 3×ATR — candidate is in white space.',
       ],
     });
   }
@@ -483,17 +492,18 @@ function evaluateSoloway(snap, ctx) {
   }
 
   // ─── 7. Confluence support (PRE-04 — ≥2 factors within 0.5×ATR) ─
-  // The playbook's current implementation is happy with 2 confirmations.
-  // When only 2 factors are available, the setup can still qualify if the
-  // trend is tradable and the risk/reward profile passes.
-  if (conf.factors.length < 2) {
+  // The playbook still prefers two factors, but very strong single-factor
+  // setups may qualify when the trend, trend location, and risk/reward are all
+  // high enough.
+  const singleFactorCandidate = conf.factors.length === 1;
+  if (conf.factors.length < 2 && !singleFactorCandidate) {
     skipReasons.push(
       `INSUFFICIENT_CONFLUENCE: only ${conf.factors.length} support factor(s) ` +
         `within 0.5×ATR — need ≥ 2 (Soloway PRE-04).`,
     );
   }
 
-  if (skipReasons.length > 0) {
+  if (skipReasons.length > 0 && !singleFactorCandidate) {
     return ret({ skipReasons, confluenceCount: conf.factors.length });
   }
 
@@ -549,6 +559,18 @@ function evaluateSoloway(snap, ctx) {
     factorCount: conf.factors.length,
     rr: achievedRR,
   });
+
+  if (singleFactorCandidate && !qualifiesAsSingleStrongFactor({ snap, achievedRR, confidence })) {
+    return ret({
+      skipReasons: [
+        'INSUFFICIENT_CONFLUENCE: only 1 support factor within 0.5×ATR; ' +
+          'single-factor setups require UPTREND, price > MA50, ≥2:1 R:R, and confidence ≥ 0.55.',
+      ],
+      confidence,
+      confluenceCount: conf.factors.length,
+    });
+  }
+
   if (confidence < MIN_CONFIDENCE) {
     return ret({
       skipReasons: [

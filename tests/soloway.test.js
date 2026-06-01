@@ -219,13 +219,20 @@ describe('PRE-04 — confluence requires ≥ 2 factors', () => {
     expect(r.factors.length).toBeLessThan(2);
   });
 
-  test('Soloway skips with INSUFFICIENT_CONFLUENCE message', () => {
-    const snap = baseSnapshot({ atr: 10, price: 2317, ma50: 2314, support: 2280 });
+  test('rejects 1-factor setup that does not meet the strong single-factor criteria', () => {
+    const snap = baseSnapshot({
+      atr: 10,
+      price: 2317,
+      ma50: 2314,
+      support: 2280,
+      resistance: 2375,
+      trend: 'SIDEWAYS',
+      pullbackPct: 1.1,
+      volume: 'OK',
+    });
     const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
     expect(r.recommendation).toBeNull();
-    expect(
-      r.skipReasons.some((s) => s.startsWith('INSUFFICIENT_CONFLUENCE') || s.startsWith('NO_NEARBY_LEVELS')),
-    ).toBe(true);
+    expect(r.skipReasons.some((s) => s.startsWith('INSUFFICIENT_CONFLUENCE'))).toBe(true);
   });
 
   test('allows 2-factor confluence when trend and R:R pass', () => {
@@ -243,10 +250,17 @@ describe('PRE-04 — confluence requires ≥ 2 factors', () => {
     expect(r.recommendation.riskReward).toBeGreaterThanOrEqual(2);
   });
 
-  test('allows smaller pullbacks down to 1.5%', () => {
-    const snap = baseSnapshot({ pullbackPct: 1.6 });
+  test('allows smaller pullbacks down to 1.0%', () => {
+    const snap = baseSnapshot({ pullbackPct: 1.1 });
     const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
     expect(r.recommendation).not.toBeNull();
+  });
+
+  test('rejects when pullback is below 1.0%', () => {
+    const snap = baseSnapshot({ pullbackPct: 0.9 });
+    const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
+    expect(r.recommendation).toBeNull();
+    expect(r.skipReasons.some((s) => s.startsWith('Pullback only'))).toBe(true);
   });
 
   test('passes chop threshold when ATR/price is ~0.35%', () => {
@@ -263,6 +277,24 @@ describe('PRE-04 — confluence requires ≥ 2 factors', () => {
     const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
     expect(r.recommendation).not.toBeNull();
     expect(r.skipReasons.some((s) => s.startsWith('CHOP_LOW_VOL'))).toBe(false);
+  });
+
+  test('allows a strong single-factor setup when trend, MA, R:R, and confidence are all strong', () => {
+    const snap = baseSnapshot({
+      atr: 10,
+      atrMedian: 10,
+      price: 2307,
+      ma50: 2302,
+      support: 2270,
+      resistance: 2360,
+      pullbackPct: 1.6,
+      volume: 'STRONG',
+    });
+    const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
+    expect(r.recommendation).not.toBeNull();
+    expect(r.confluenceCount).toBe(1);
+    expect(r.confidence).toBeGreaterThanOrEqual(0.55);
+    expect(r.recommendation.riskReward).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -299,7 +331,7 @@ describe('STP-01 — ATR-anchored stop', () => {
 // 6. STAY-OUT filters
 // ---------------------------------------------------------------------------
 describe('STAY-OUT filters', () => {
-  test('CHOP_LOW_VOL when ATR/price < 0.4%', () => {
+  test('CHOP_LOW_VOL when ATR/price < 0.25%', () => {
     // ATR/price = 5/2300 ≈ 0.22% — chop
     const snap = baseSnapshot({ atr: 5, atrMedian: 5 });
     const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
@@ -321,23 +353,14 @@ describe('STAY-OUT filters', () => {
     expect(r.skipReasons.some((s) => s.startsWith('RSI_OVERBOUGHT_NO_ENTRY'))).toBe(true);
   });
 
-  test('NO_NEARBY_LEVELS when no factors within 2×ATR', () => {
-    // ATR=10, white-space band=20. Place all factors > 20 from price.
+  test('NO_NEARBY_LEVELS when no factors within 3×ATR', () => {
+    // ATR=10, white-space band=30. Place all factors > 30 from price.
     const snap = baseSnapshot({
       atr: 10,
-      ma50: 2270, // 30 below
-      support: 2260, // 40 below
-      // round-number factor for ETH: floor(2300/50)*50 = 2300 (would equal
-      // price, which is "not below"). Set price to 2305 so floor(2305/50)*50 = 2300
-      // is 5 below — within range. So we need to push price up to make round
-      // far. price=2350, floor(2350/50)*50=2350 (equal, skipped). Hmm —
-      // round-number passes only when level <= price AND not equal? Look
-      // at checkFactor: requires level <= snap.price. Set price=2351 →
-      // floor=2350, 1 below, within range. Need to construct so round is
-      // also far. Use price=2371 → floor=2350, 21 below, > 20. Good.
-      price: 2371,
-      ma50: 2330, // 41 below
-      support: 2300, // 71 below
+      ma50: 2299, // 32 below
+      support: 2299, // 32 below
+      // round-number factor for ETH: floor(2331/50)*50 = 2300, 31 below
+      price: 2331,
       recentHigh: 2400,
     });
     const r = evaluateSoloway(snap, { liveSymbol: 'ETH-USD', now: monday() });
