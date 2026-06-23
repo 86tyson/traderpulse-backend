@@ -10,7 +10,7 @@ providers = ["node"]
 nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["npm ci --omit=dev"]
+cmds = ["npm install --omit=dev --no-audit --no-fund"]
 
 [phases.build]
 # Empty — there is nothing to build. The server runs raw `node src/server.js`.
